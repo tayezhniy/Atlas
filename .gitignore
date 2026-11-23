@@ -1,0 +1,20 @@
+/target
+/.atlas
+*.db
+*.db-shm
+*.db-wal
+**/*.rs.bak
+*.log
+.DS_Store
+.vscode/
+.idea/
+node_modules/
+dist/
+.turbo/
+*.swp
+*.swo
+~*
+
+# Tauri
+/src-tauri/target
+/src-tauri/gen

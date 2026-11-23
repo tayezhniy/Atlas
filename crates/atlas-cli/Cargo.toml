@@ -1,0 +1,15 @@
+[package]
+name = "atlas-cli"
+description = "CLI Atlas: команды index, mcp, run, doctor"
+authors = ["Дмитрий"]
+edition = "2021"
+
+[dependencies]
+atlas-store = { path = "../atlas-store" }
+atlas-core = { path = "../atlas-core" }
+atlas-indexer = { path = "../atlas-indexer" }
+atlas-mcp = { path = "../atlas-mcp" }
+clap = { workspace = true, features = ["derive"] }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

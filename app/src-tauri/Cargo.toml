@@ -1,0 +1,15 @@
+[package]
+name = "atlas-tauri"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tauri = { version = "2", features = ["api-all"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+atlas-core = { path = "../../crates/atlas-core" }
+atlas-store = { path = "../../crates/atlas-store" }
+atlas-indexer = { path = "../../crates/atlas-indexer" }
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }

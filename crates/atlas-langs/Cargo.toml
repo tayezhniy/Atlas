@@ -1,0 +1,10 @@
+[package]
+name = "atlas-langs"
+description = "Языковые плагины Atlas: запросы tree-sitter по языкам (parsing plugins)"
+authors = ["Дмитрий"]
+edition = "2021"
+
+[dependencies]
+tree-sitter = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }

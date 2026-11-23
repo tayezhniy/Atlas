@@ -1,0 +1,18 @@
+[package]
+name = "atlas-indexer"
+description = "Индексатор Atlas: обход файлов, парсинг,observation, инкрементальное обновление"
+authors = ["Дмитрий"]
+edition = "2021"
+
+[dependencies]
+atlas-store = { path = "../atlas-store" }
+atlas-core = { path = "../atlas-core" }
+atlas-langs = { path = "../atlas-langs" }
+serde = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+ignore = { workspace = true }
+notify = { workspace = true }
