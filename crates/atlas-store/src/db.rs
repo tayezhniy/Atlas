@@ -137,6 +137,44 @@ impl Store {
         }
     }
 
+    /// Находит узел по точному пути.
+    pub fn find_node_by_path(&self, path: &str) -> Result<Option<Node>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, kind, path, name, parent_id, lang, hash, line_start, line_end, signature, doc_summary, tokens_est, rank
+             FROM node WHERE path = ?1",
+        )?;
+        match stmt.query_row(params![path], |row| {
+            let id_str: String = row.get(0)?;
+            let id = uuid::Uuid::parse_str(&id_str).map_err(|e| rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e)))?;
+            let kind_str: String = row.get(1)?;
+            let kind = parse_node_kind(&kind_str).map_err(|e| rusqlite::Error::FromSqlConversionFailure(1, rusqlite::types::Type::Text, Box::new(e)))?;
+            let parent_id: Option<String> = row.get(4)?;
+            let parent_id = match parent_id {
+                Some(s) => Some(uuid::Uuid::parse_str(&s).map_err(|e| rusqlite::Error::FromSqlConversionFailure(4, rusqlite::types::Type::Text, Box::new(e)))?),
+                None => None,
+            };
+            Ok(Node {
+                id,
+                kind,
+                path: row.get(2)?,
+                name: row.get(3)?,
+                parent_id,
+                lang: row.get(5)?,
+                hash: row.get(6)?,
+                line_start: row.get(7)?,
+                line_end: row.get(8)?,
+                signature: row.get(9)?,
+                doc_summary: row.get(10)?,
+                tokens_est: row.get(11)?,
+                rank: row.get(12)?,
+            })
+        }) {
+            Ok(node) => Ok(Some(node)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(StoreError::Sql(e)),
+        }
+    }
+
     /// Находит узлы по пути (префиксный поиск).
     pub fn find_nodes_by_path_prefix(&self, path_prefix: &str) -> Result<Vec<Node>> {
         let mut stmt = self.conn.prepare(

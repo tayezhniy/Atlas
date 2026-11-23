@@ -40,15 +40,42 @@ atlas/
 
 ## Начало работы
 
+### Ядро (Rust)
+
 ```bash
 # Сборка ядра
 cargo build --release
 
 # Индексация проекта
-atlas index /путь/к/проекту
+cargo run --bin atlas-cli -- index /путь/к/проекту
 
 # Запуск MCP-сервера
-atlas mcp
+cargo run --bin atlas-cli -- mcp
+
+# Тесты
+cargo test
 ```
+
+### Интерфейс (Tauri + React)
+
+Требуется Node.js и npm:
+
+```bash
+cd app/ui
+npm install
+npm run dev      # Режим разработки
+npm run build    # Сборка для продакшена
+```
+
+После сборки UI приложение запускается через `cargo run` (Tauri оболочка).
+
+### CLI-команды
+
+| Команда | Описание |
+|---|---|
+| `atlas index <путь>` | Индексировать проект |
+| `atlas mcp` | Запустить MCP-сервер (stdio) |
+| `atlas run <команда>` | Выполнить с фильтром вывода |
+| `atlas doctor` | Проверка состояния |
 
 Подробнее в [ТЗ](docs/TZ.md).

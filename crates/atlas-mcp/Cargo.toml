@@ -15,3 +15,6 @@ thiserror = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
 # mcp = { workspace = true } — отключено: нет подходящей версии на crates.io, будет добавлено на этапе MCP
+
+[dev-dependencies]
+tempfile = "3"

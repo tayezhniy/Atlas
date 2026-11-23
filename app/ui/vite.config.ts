@@ -1,8 +1,9 @@
 import { defineConfig } from 'vite'
-import tauri from 'tauri-plugin-vite'
+import react from '@vitejs/plugin-react'
+import tailwindcss from '@tailwindcss/vite'
 
 export default defineConfig({
-  plugins: [tauri()],
+  plugins: [react(), tailwindcss()],
   build: {
     outDir: '../src-tauri/gen/dist',
     emptyOutDir: true,
