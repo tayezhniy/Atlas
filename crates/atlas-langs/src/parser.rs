@@ -60,6 +60,16 @@ pub struct Call {
     pub line: usize,
 }
 
+/// Наследование: класс-потомок и имя родителя/интерфейса.
+#[derive(Debug, Clone)]
+pub struct Heritage {
+    /// Имя класса/структуры, которая наследует.
+    pub child: String,
+    /// Имя родителя или реализуемого интерфейса.
+    pub parent: String,
+    pub line: usize,
+}
+
 /// Результат парсинга одного файла.
 #[derive(Debug, Clone)]
 pub struct ParsedFile {
@@ -68,6 +78,7 @@ pub struct ParsedFile {
     pub symbols: Vec<Symbol>,
     pub imports: Vec<Import>,
     pub calls: Vec<Call>,
+    pub extends: Vec<Heritage>,
 }
 
 /// Парсер исходного кода на основе tree-sitter (раздел 4.2 ТЗ).

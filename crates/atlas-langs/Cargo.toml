@@ -12,5 +12,3 @@ tree-sitter-python = "0.21"
 tree-sitter-typescript = "0.21"
 thiserror = { workspace = true }
 anyhow = { workspace = true }
-serde = { workspace = true }
-serde_json = { workspace = true }

@@ -108,14 +108,12 @@ name = "atlas-core"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "atlas-langs",
  "atlas-store",
  "chrono",
  "petgraph",
  "serde",
- "serde_json",
+ "tempfile",
  "thiserror",
- "tracing",
  "uuid",
 ]
 
@@ -143,8 +141,6 @@ name = "atlas-langs"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "serde",
- "serde_json",
  "thiserror",
  "tree-sitter",
  "tree-sitter-python",
@@ -176,9 +172,7 @@ dependencies = [
  "chrono",
  "rusqlite",
  "serde",
- "serde_json",
  "thiserror",
- "tracing",
  "uuid",
 ]
 

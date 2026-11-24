@@ -1,3 +1,4 @@
+pub mod support;
 pub mod walker;
 pub mod watcher;
 pub mod incremental;

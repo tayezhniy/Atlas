@@ -1,5 +1,5 @@
 use crate::ranking::Ranker;
-use atlas_store::{Edge, EdgeKind, Node, NodeKind, Store};
+use atlas_store::{EdgeKind, NodeKind, Store};
 use petgraph::graph::{DiGraph, NodeIndex};
 use petgraph::Direction;
 use std::collections::HashMap;

@@ -1,17 +1,26 @@
+//! Основной индексатор проекта (раздел 4 ТЗ).
+//!
+//! Связывает обход файлов, парсинг tree-sitter и запись в atlas-store.
+//! Один и тот же код индексирует и весь проект, и отдельные изменившиеся файлы.
+
+use crate::support::{
+    atlas_hash, estimate_tokens, is_generated_file, is_generic_name, is_test_file, map_symbol_kind,
+    resolve_import_target as resolve_import, simple_name,
+};
 use crate::walker::{ProjectWalker, WalkedFile};
-use atlas_core::ranking::Ranker;
-use atlas_langs::LanguageParser;
-use atlas_store::{db::Store, schema::{Edge, EdgeKind, FileMeta, Node, NodeKind}};
+use atlas_langs::{LanguageParser, ParsedFile};
+use atlas_store::db::Store;
+use atlas_store::schema::{Confidence, Edge, EdgeKind, FileMeta, Node, NodeKind};
 use anyhow::Result;
-use rusqlite::{params, OptionalExtension};
-use std::path::Path;
-use std::collections::HashMap;
-use uuid::Uuid;
 use chrono::Utc;
-use tracing::{info, warn, debug};
+use rusqlite::{params, OptionalExtension};
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
+use tracing::{debug, info, warn};
+use uuid::Uuid;
 
 /// Статистика индексации.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct IndexStats {
     pub files_scanned: usize,
     pub files_indexed: usize,
@@ -22,28 +31,26 @@ pub struct IndexStats {
 }
 
 /// Основной индексатор проекта (раздел 4 ТЗ).
-/// Связывает обход файлов, парсинг tree-sitter и запись в atlas-store.
 pub struct ProjectIndexer<'a> {
     store: &'a mut Store,
     parser: LanguageParser,
-    ranker: Ranker,
     root_path: String,
     stats: IndexStats,
-    // Кэш ID узлов по путям файлов для построения рёбер contains
+    /// Путь файла -> ID узла файла (для разрешения импортов).
     file_node_ids: HashMap<String, Uuid>,
-    // Кэш ID узлов символов по qualified имени для построения рёбер calls
+    /// `путь::имя` -> ID узла символа.
     symbol_node_ids: HashMap<String, Uuid>,
-    // Вызовы и импорты разрешаются после обхода всех файлов: цель может быть ещё не проиндексирована
-    pending_calls: Vec<PendingCall>,
+    pending_calls: Vec<PendingRef>,
     pending_imports: Vec<PendingImport>,
-    // Входящие связи из неизменённых файлов в изменённый: (ребро, путь, имя и вид цели)
+    pending_extends: Vec<PendingRef>,
+    /// Входящие связи из неизменённых файлов в изменённый: (ребро, путь, имя, вид цели)
     preserved_edges: Vec<(Edge, String, String, String)>,
 }
 
-struct PendingCall {
+struct PendingRef {
     src: Uuid,
     path: String,
-    callee: String,
+    name: String,
 }
 
 struct PendingImport {
@@ -57,13 +64,13 @@ impl<'a> ProjectIndexer<'a> {
         Self {
             store,
             parser: LanguageParser::new(),
-            ranker: Ranker::new(),
             root_path: root_path.to_string(),
             stats: IndexStats::default(),
             file_node_ids: HashMap::new(),
             symbol_node_ids: HashMap::new(),
             pending_calls: Vec::new(),
             pending_imports: Vec::new(),
+            pending_extends: Vec::new(),
             preserved_edges: Vec::new(),
         }
     }
@@ -71,49 +78,88 @@ impl<'a> ProjectIndexer<'a> {
     /// Полная индексация проекта: обход, парсинг, запись в БД.
     pub fn index_project(&mut self) -> Result<IndexStats> {
         info!("Начало индексации проекта: {}", self.root_path);
-
-        // 1. Создаём или обновляем запись проекта
         self.upsert_project_record()?;
+        self.preload_maps()?;
 
-        // 2. Обходим файлы
         let options = crate::walker::WalkOptions {
-            root: Path::new(&self.root_path).to_path_buf(),
+            root: PathBuf::from(&self.root_path),
             ..Default::default()
         };
-        let walker = ProjectWalker::new(options);
-        let files = walker.walk()?;
+        let files = ProjectWalker::new(options).walk()?;
         self.stats.files_scanned = files.len();
         info!("Найдено файлов для индексации: {}", files.len());
 
-        // 3. Индексируем каждый файл
         for walked in &files {
-            if let Err(e) = self.index_file(walked) {
+            if let Err(e) = self.index_walked_file(walked) {
                 warn!("Ошибка индексации файла {}: {}", walked.path.display(), e);
                 self.stats.errors += 1;
             }
         }
 
-        // Файлы, удалённые с диска, убираем из индекса вместе со связями
-        let on_disk: std::collections::HashSet<String> =
-            files.iter().map(|f| self.relative_path(&f.path)).collect();
-        for indexed in self.store.file_paths()? {
-            if !on_disk.contains(&indexed) {
-                self.store.delete_nodes_by_path(&indexed)?;
+        self.delete_missing_files(&files)?;
+        self.finish()?;
+        Ok(self.stats.clone())
+    }
+
+    /// Инкрементальная индексация конкретных файлов (пути абсолютные).
+    pub fn index_paths(&mut self, paths: Vec<PathBuf>) -> Result<IndexStats> {
+        self.upsert_project_record()?;
+        self.preload_maps()?;
+        self.stats.files_scanned = paths.len();
+        for path in &paths {
+            if !path.is_file() {
+                continue;
+            }
+            let walked = WalkedFile {
+                path: path.clone(),
+                size: path.metadata().map(|m| m.len()).unwrap_or(0),
+                language: None,
+                too_large: false,
+            };
+            if let Err(e) = self.index_walked_file(&walked) {
+                warn!("Ошибка индексации файла {}: {}", path.display(), e);
+                self.stats.errors += 1;
             }
         }
+        self.finish()?;
+        Ok(self.stats.clone())
+    }
 
-        // 4. Разрешаем связи, когда все узлы уже в базе
+    /// Индексация одного файла из уже прочитанного содержимого (наблюдатель, тесты).
+    pub fn index_content(&mut self, rel_path: &str, content: &str) -> Result<IndexStats> {
+        self.upsert_project_record()?;
+        self.preload_maps()?;
+        self.stats.files_scanned = 1;
+        let abs = PathBuf::from(&self.root_path).join(rel_path);
+        let abs = abs.is_file().then_some(abs);
+        if self.index_content_inner(rel_path, content, abs.as_deref())? {
+            self.stats.files_indexed = 1;
+        }
+        self.finish()?;
+        Ok(self.stats.clone())
+    }
+
+    fn preload_maps(&mut self) -> Result<()> {
+        self.file_node_ids.clear();
+        self.symbol_node_ids.clear();
+        for node in self.store.file_nodes()? {
+            self.file_node_ids.insert(node.path.clone(), node.id);
+        }
+        for node in self.store.symbol_nodes()? {
+            self.symbol_node_ids
+                .insert(format!("{}::{}", node.path, node.name), node.id);
+        }
+        Ok(())
+    }
+
+    fn finish(&mut self) -> Result<()> {
         self.resolve_pending()?;
-
-        // 5. Рассчитываем ранги и обновляем узлы
-        self.calculate_and_update_ranks()?;
-
-        // 6. Сохраняем метаданные проекта
-        self.store.conn_mut().execute(
-            "UPDATE project SET last_indexed_at = ?1 WHERE root_path = ?2",
+        atlas_core::ranking::recompute_ranks(self.store)?;
+        self.store.conn().execute(
+            "UPDATE project SET last_indexed_at = ?1, schema_version = 2, parser_version = 2
+             WHERE root_path = ?2",
             params![Utc::now().to_rfc3339(), self.root_path],
         )?;
-
         info!(
             "Индексация завершена: {} файлов, {} символов, {} импортов, {} вызовов",
             self.stats.files_indexed,
@@ -121,8 +167,20 @@ impl<'a> ProjectIndexer<'a> {
             self.stats.imports_extracted,
             self.stats.calls_extracted,
         );
+        Ok(())
+    }
 
-        Ok(self.stats.clone())
+    /// Удаляет из индекса файлы, которых больше нет на диске.
+    fn delete_missing_files(&mut self, files: &[WalkedFile]) -> Result<()> {
+        let on_disk: HashSet<String> = files.iter().map(|f| self.relative_path(&f.path)).collect();
+        for node in self.store.file_nodes()? {
+            if !on_disk.contains(&node.path) {
+                self.store.delete_nodes_by_path(&node.path)?;
+                self.file_node_ids.remove(&node.path);
+            }
+        }
+        self.store.clear_empty_dirs()?;
+        Ok(())
     }
 
     /// Путь файла относительно корня проекта, с разделителем `/`.
@@ -133,12 +191,15 @@ impl<'a> ProjectIndexer<'a> {
             .replace('\\', "/")
     }
 
-    /// Индексация одного файла.
-    fn index_file(&mut self, walked: &WalkedFile) -> Result<()> {
-        // В индексе хранятся пути относительно корня проекта (раздел 5.4 ТЗ)
+    fn index_walked_file(&mut self, walked: &WalkedFile) -> Result<()> {
         let path_str = self.relative_path(&walked.path);
-
-        // Читаем содержимое файла
+        // Крупные файлы не разбираем, но узел в индексе сохраняем (раздел 4.4 ТЗ)
+        if walked.too_large {
+            if self.index_oversized_file(&path_str, walked)? {
+                self.stats.files_indexed += 1;
+            }
+            return Ok(());
+        }
         let content = match std::fs::read_to_string(&walked.path) {
             Ok(c) => c,
             Err(e) => {
@@ -147,86 +208,153 @@ impl<'a> ProjectIndexer<'a> {
                 return Ok(());
             }
         };
+        if self.index_content_inner(&path_str, &content, Some(&walked.path))? {
+            self.stats.files_indexed += 1;
+        }
+        Ok(())
+    }
 
-        // Вычисляем хеш содержимого
-        let hash = atlas_hash(&content);
+    /// Узел для файла больше порога: без чтения и разбора содержимого.
+    fn index_oversized_file(&mut self, path_str: &str, walked: &WalkedFile) -> Result<bool> {
+        let mtime = walked
+            .path
+            .metadata()
+            .ok()
+            .and_then(|m| m.modified().ok())
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let hash = format!("oversized:{}:{}", walked.size, mtime);
+        if let Some(existing) = self.store.find_file_node_by_path(path_str)? {
+            if existing.hash.as_ref() == Some(&hash) {
+                self.file_node_ids.insert(path_str.to_string(), existing.id);
+                return Ok(false);
+            }
+            for (edge, name, kind) in self.store.incoming_edges_from_other_files(path_str)? {
+                self.preserved_edges
+                    .push((edge, path_str.to_string(), name, kind));
+            }
+            self.store.delete_nodes_by_path(path_str)?;
+        }
+        let file_id = Uuid::new_v4();
+        let parent_id = self.ensure_dir(path_str)?;
+        self.store.upsert_node(&Node {
+            id: file_id,
+            kind: NodeKind::File,
+            path: path_str.to_string(),
+            name: Path::new(path_str)
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string(),
+            parent_id,
+            lang: walked.language.clone(),
+            hash: Some(hash),
+            line_start: None,
+            line_end: None,
+            signature: None,
+            doc_summary: Some("файл больше лимита: содержимое не разбиралось".to_string()),
+            tokens_est: (walked.size / 4) as i32,
+            rank: 0.0,
+        })?;
+        self.file_node_ids.insert(path_str.to_string(), file_id);
+        self.store.upsert_file_meta(&FileMeta {
+            node_id: file_id,
+            size: walked.size as i64,
+            mtime: None,
+            git_changes_30d: 0,
+            last_commit: None,
+            is_test: is_test_file(path_str),
+            is_generated: is_generated_file(path_str),
+        })?;
+        Ok(true)
+    }
 
-        // Проверяем, нужно ли переиндексировать (по хешу)
-        if let Some(existing) = self.store.find_file_node_by_path(&path_str)? {
+    /// Индексирует один файл. Возвращает true, если файл действительно переиндексирован.
+    fn index_content_inner(
+        &mut self,
+        path_str: &str,
+        content: &str,
+        abs_path: Option<&Path>,
+    ) -> Result<bool> {
+        let hash = atlas_hash(content);
+
+        if let Some(existing) = self.store.find_file_node_by_path(path_str)? {
             if existing.hash.as_ref() == Some(&hash) {
                 debug!("Файл не изменился, пропускаем: {}", path_str);
-                // Узел остаётся прежним, но его id нужен для связей из других файлов
-                self.file_node_ids.insert(path_str.clone(), existing.id);
-                return Ok(());
+                self.file_node_ids.insert(path_str.to_string(), existing.id);
+                return Ok(false);
             }
-            // Файл изменился: убираем старые узлы и связи, чтобы не копились дубликаты.
-            // Связи из других (неизменённых) файлов запоминаем: сами они не пересоберутся.
-            for (edge, name, kind) in self.store.incoming_edges_from_other_files(&path_str)? {
-                self.preserved_edges.push((edge, path_str.clone(), name, kind));
+            // Файл изменился: запоминаем входящие связи из неизменённых файлов
+            for (edge, name, kind) in self.store.incoming_edges_from_other_files(path_str)? {
+                self.preserved_edges
+                    .push((edge, path_str.to_string(), name, kind));
             }
-            self.store.delete_nodes_by_path(&path_str)?;
+            self.store.delete_nodes_by_path(path_str)?;
         }
 
-        // Парсим файл. Неподдерживаемый язык — не ошибка: файл попадает в индекс как узел без символов
-        let parsed = match self.parser.parse(&path_str, &content) {
+        // Неподдерживаемый язык — не ошибка: файл попадает в индекс как узел без символов
+        let parsed = match self.parser.parse(path_str, content) {
             Ok(p) => p,
-            Err(e) if e.to_string().contains("unsupported language") => atlas_langs::ParsedFile {
-                path: path_str.clone(),
-                language: walked.language.clone().unwrap_or_default(),
+            Err(e) if e.to_string().contains("unsupported language") => ParsedFile {
+                path: path_str.to_string(),
+                language: String::new(),
                 symbols: Vec::new(),
                 imports: Vec::new(),
                 calls: Vec::new(),
+                extends: Vec::new(),
             },
             Err(e) => {
                 warn!("Ошибка парсинга файла {}: {}", path_str, e);
                 self.stats.errors += 1;
-                return Ok(());
+                return Ok(false);
             }
         };
 
-        // Создаём узел файла
         let file_id = Uuid::new_v4();
+        let parent_id = self.ensure_dir(path_str)?;
         let file_node = Node {
             id: file_id,
             kind: NodeKind::File,
-            path: path_str.clone(),
-            name: walked.path.file_name().unwrap_or_default().to_string_lossy().to_string(),
-            parent_id: self.parent_id_for_path(&path_str)?,
-            lang: if parsed.language.is_empty() { None } else { Some(parsed.language.clone()) },
+            path: path_str.to_string(),
+            name: Path::new(path_str)
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string(),
+            parent_id,
+            lang: (!parsed.language.is_empty()).then(|| parsed.language.clone()),
             hash: Some(hash),
             line_start: None,
             line_end: None,
             signature: None,
             doc_summary: None,
-            tokens_est: estimate_tokens(&content),
+            tokens_est: estimate_tokens(content),
             rank: 0.0,
         };
         self.store.upsert_node(&file_node)?;
-        self.file_node_ids.insert(path_str.clone(), file_id);
+        self.file_node_ids.insert(path_str.to_string(), file_id);
 
-        // Метаданные файла
-        let (size, mtime) = match walked.path.metadata() {
-            Ok(m) => (m.len() as i64, m.modified().ok().map(|t| t.into())),
-            Err(_) => (0, None),
+        let (size, mtime) = match abs_path.and_then(|p| p.metadata().ok()) {
+            Some(m) => (m.len() as i64, m.modified().ok().map(|t| t.into())),
+            None => (content.len() as i64, None),
         };
-        let file_meta: FileMeta = FileMeta {
+        self.store.upsert_file_meta(&FileMeta {
             node_id: file_id,
             size,
             mtime,
             git_changes_30d: 0,
             last_commit: None,
-            is_test: is_test_file(&path_str),
-            is_generated: is_generated_file(&path_str),
-        };
-        self.store.upsert_file_meta(&file_meta)?;
+            is_test: is_test_file(path_str),
+            is_generated: is_generated_file(path_str),
+        })?;
 
-        // Вставляем символы
         for sym in &parsed.symbols {
             let symbol_id = Uuid::new_v4();
             let symbol_node = Node {
                 id: symbol_id,
                 kind: map_symbol_kind(&sym.kind),
-                path: path_str.clone(),
+                path: path_str.to_string(),
                 name: sym.name.clone(),
                 parent_id: Some(file_id),
                 lang: Some(parsed.language.clone()),
@@ -235,109 +363,117 @@ impl<'a> ProjectIndexer<'a> {
                 line_end: Some(sym.line_end as i32),
                 signature: sym.signature.clone(),
                 doc_summary: sym.doc.clone(),
-                tokens_est: estimate_tokens(&sym.signature.clone().unwrap_or_default()),
+                tokens_est: estimate_tokens(
+                    &sym.signature.clone().unwrap_or_else(|| sym.name.clone()),
+                ),
                 rank: 0.0,
             };
             self.store.upsert_node(&symbol_node)?;
-            self.symbol_node_ids.insert(
-                format!("{}::{}", path_str, sym.name),
-                symbol_id,
-            );
+            self.symbol_node_ids
+                .insert(format!("{}::{}", path_str, sym.name), symbol_id);
             self.stats.symbols_extracted += 1;
         }
 
-        // Импорты: связь файл -> файл, разрешается в конце обхода
         for imp in &parsed.imports {
             self.pending_imports.push(PendingImport {
                 src: file_id,
-                from_path: path_str.clone(),
+                from_path: path_str.to_string(),
                 target: imp.to.clone(),
             });
             self.stats.imports_extracted += 1;
         }
 
-        // Вызовы: вызывающий — самый внутренний символ файла, чей диапазон строк содержит вызов
+        // Вызовы: вызывающий — самый внутренний символ файла, содержащий строку вызова
         for call in &parsed.calls {
             let caller = parsed
                 .symbols
                 .iter()
                 .filter(|sy| {
-                    matches!(sy.kind, atlas_langs::SymbolKind::Function | atlas_langs::SymbolKind::Method)
-                        && sy.line_start <= call.line
+                    matches!(
+                        sy.kind,
+                        atlas_langs::SymbolKind::Function | atlas_langs::SymbolKind::Method
+                    ) && sy.line_start <= call.line
                         && call.line <= sy.line_end
                 })
                 .min_by_key(|sy| sy.line_end - sy.line_start);
-            if is_generic_name(&simple_name(&call.callee)) {
-                // `new`, `default`, `get`… есть почти у каждого типа; без анализа типов связь была бы догадкой
-                self.stats.calls_extracted += 1;
+            self.stats.calls_extracted += 1;
+            let callee = simple_name(&call.callee);
+            if is_generic_name(&callee) {
                 continue;
             }
             if let Some(caller) = caller {
-                if let Some(src) = self.find_symbol_id(&path_str, &caller.name) {
-                    self.pending_calls.push(PendingCall {
+                if let Some(src) = self.find_symbol_id(path_str, &caller.name) {
+                    self.pending_calls.push(PendingRef {
                         src,
-                        path: path_str.clone(),
-                        callee: simple_name(&call.callee),
+                        path: path_str.to_string(),
+                        name: callee,
                     });
                 }
             }
-            self.stats.calls_extracted += 1;
         }
 
-        self.stats.files_indexed += 1;
-        Ok(())
+        for heritage in &parsed.extends {
+            if let Some(src) = self.find_symbol_id(path_str, &heritage.child) {
+                self.pending_extends.push(PendingRef {
+                    src,
+                    path: path_str.to_string(),
+                    name: heritage.parent.clone(),
+                });
+            }
+        }
+
+        Ok(true)
     }
 
     /// Вставляет или обновляет запись проекта.
     fn upsert_project_record(&mut self) -> Result<()> {
-        // Проверяем, существует ли проект
-        let existing: Option<String> = self.store.conn().query_row(
-            "SELECT id FROM project WHERE root_path = ?1",
-            params![&self.root_path],
-            |row| row.get(0),
-        ).optional()?;
-
-        let project_id = match existing {
-            Some(id) => id,
-            None => Uuid::new_v4().to_string(),
-        };
-
+        let existing: Option<String> = self
+            .store
+            .conn()
+            .query_row(
+                "SELECT id FROM project WHERE root_path = ?1",
+                params![&self.root_path],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let project_id = existing.unwrap_or_else(|| Uuid::new_v4().to_string());
         self.store.conn().execute(
             "INSERT OR REPLACE INTO project (id, root_path, schema_version, parser_version, last_indexed_at, name, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+             VALUES (?1, ?2, 2, 2, ?3, ?4, COALESCE((SELECT created_at FROM project WHERE id = ?1), ?3))",
             params![
                 project_id,
                 &self.root_path,
-                1, // schema_version
-                1, // parser_version
                 Utc::now().to_rfc3339(),
-                Path::new(&self.root_path).file_name().unwrap_or_default().to_string_lossy(),
-                Utc::now().to_rfc3339(),
+                Path::new(&self.root_path)
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy(),
             ],
         )?;
         Ok(())
     }
 
-    /// Вычисляет ID родительского каталога для пути.
-    fn parent_id_for_path(&mut self, path: &str) -> Result<Option<Uuid>> {
-        let parent = Path::new(path).parent()
-            .and_then(|p| p.to_str())
-            .unwrap_or("");
-        if parent.is_empty() || parent == "." {
-            return Ok(None);
-        }
-        // Ищем существующий узел каталога
-        if let Some(node) = self.store.find_node_by_path(parent)? {
+    /// Гарантирует наличие узлов каталогов для пути, возвращает ID родителя.
+    fn ensure_dir(&mut self, path: &str) -> Result<Option<Uuid>> {
+        let parent = match Path::new(path).parent().and_then(|p| p.to_str()) {
+            Some(p) if !p.is_empty() && p != "." => p.to_string(),
+            _ => return Ok(None),
+        };
+        if let Some(node) = self.store.find_dir_node_by_path(&parent)? {
             return Ok(Some(node.id));
         }
-        // Создаём узел каталога (рекурсивно для родителей)
         let dir_id = Uuid::new_v4();
+        let dir_parent = self.ensure_dir(&parent)?;
         let dir_node = Node {
             id: dir_id,
             kind: NodeKind::Dir,
-            path: parent.to_string(),
-            name: Path::new(parent).file_name().unwrap_or_default().to_string_lossy().to_string(),
-            parent_id: self.parent_id_for_path(parent)?,
+            path: parent.clone(),
+            name: Path::new(&parent)
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string(),
+            parent_id: dir_parent,
             lang: None,
             hash: None,
             line_start: None,
@@ -348,61 +484,24 @@ impl<'a> ProjectIndexer<'a> {
             rank: 0.0,
         };
         self.store.upsert_node(&dir_node)?;
-        self.file_node_ids.insert(parent.to_string(), dir_id);
         Ok(Some(dir_id))
     }
 
-    /// Разрешает цель импорта в ID узла файла.
-    /// Пробует путь как есть, относительный путь от импортирующего файла и имя модуля
-    /// (`pkg.mod` -> `pkg/mod.py`) с типичными расширениями и индексными файлами.
-    fn resolve_import_target(&mut self, import_target: &str, from_path: &str) -> Result<Option<Uuid>> {
-        const SUFFIXES: [&str; 10] = [
-            "", ".py", "/__init__.py", ".ts", ".tsx", ".js", ".jsx", "/index.ts", "/index.js", ".rs",
-        ];
-        let target = import_target.trim();
-        if target.is_empty() {
-            return Ok(None);
-        }
-        let mut bases: Vec<String> = Vec::new();
-        if target.starts_with("./") || target.starts_with("../") {
-            let dir = Path::new(from_path).parent().unwrap_or(Path::new(""));
-            bases.push(normalize_path(&dir.join(target)));
-        } else {
-            bases.push(normalize_path(Path::new(target)));
-            if !target.contains('/') {
-                bases.push(target.replace('.', "/"));
-            }
-        }
-        for base in &bases {
-            for suffix in SUFFIXES {
-                let candidate = format!("{}{}", base, suffix);
-                // Каталоги тоже лежат в file_node_ids: у файла в имени есть расширение
-                let has_ext = Path::new(&candidate).extension().is_some();
-                if !has_ext {
-                    continue;
-                }
-                if let Some(id) = self.file_node_ids.get(&candidate) {
-                    return Ok(Some(*id));
-                }
-            }
-        }
-        Ok(None)
-    }
-
-    /// Находит ID символа по пути файла и имени.
     fn find_symbol_id(&self, path: &str, symbol_name: &str) -> Option<Uuid> {
-        self.symbol_node_ids.get(&format!("{}::{}", path, symbol_name)).copied()
+        self.symbol_node_ids
+            .get(&format!("{}::{}", path, symbol_name))
+            .copied()
     }
 
-    /// Превращает собранные вызовы и импорты в рёбра графа.
-    /// Вызов в том же файле — `certain`; единственный символ с таким именем в проекте — `likely`;
-    /// несколько кандидатов — связь не создаётся (лучше пропуск, чем неверная связь).
-    fn resolve_pending(&mut self) -> Result<()> {
-        use atlas_store::schema::Confidence;
+    fn resolve_import_target(&self, target: &str, from_path: &str) -> Option<Uuid> {
+        resolve_import(&self.file_node_ids, target, from_path)
+    }
 
+    /// Превращает собранные вызовы, импорты и наследование в рёбра графа.
+    fn resolve_pending(&mut self) -> Result<()> {
         let imports = std::mem::take(&mut self.pending_imports);
         for imp in imports {
-            if let Some(dst) = self.resolve_import_target(&imp.target, &imp.from_path)? {
+            if let Some(dst) = self.resolve_import_target(&imp.target, &imp.from_path) {
                 if dst != imp.src {
                     self.store.upsert_edge(&Edge {
                         src_id: imp.src,
@@ -415,8 +514,7 @@ impl<'a> ProjectIndexer<'a> {
             }
         }
 
-        // Входящие связи из неизменённых файлов: перепривязываем к новым узлам по пути и имени.
-        // Если символ переименован или удалён, связь исчезает — так и должно быть.
+        // Входящие связи из неизменённых файлов: перепривязываем к новым узлам
         for (edge, path, name, kind) in std::mem::take(&mut self.preserved_edges) {
             let new_dst = if kind == "file" {
                 self.file_node_ids.get(&path).copied()
@@ -428,120 +526,83 @@ impl<'a> ProjectIndexer<'a> {
             }
         }
 
-        let calls = std::mem::take(&mut self.pending_calls);
-        for call in calls {
-            let same_file = self.find_symbol_id(&call.path, &call.callee);
+        for call in std::mem::take(&mut self.pending_calls) {
+            let same_file = self.find_symbol_id(&call.path, &call.name);
             let (dst, confidence) = if let Some(id) = same_file {
                 (id, Confidence::Certain)
             } else {
-                let candidates = self.store.symbols_by_name(&call.callee)?;
+                let candidates = self.store.symbols_by_name(&call.name)?;
                 if candidates.len() == 1 {
                     (candidates[0].id, Confidence::Likely)
                 } else {
                     continue;
                 }
             };
-            if dst != call.src {
+            if dst == call.src {
+                continue;
+            }
+            self.store.upsert_edge(&Edge {
+                src_id: call.src,
+                dst_id: dst,
+                kind: EdgeKind::Calls,
+                confidence,
+                weight: 1.0,
+            })?;
+            // Тест, вызывающий символ, дополнительно порождает ребро `tests`
+            if is_test_file(&call.path) {
                 self.store.upsert_edge(&Edge {
                     src_id: call.src,
                     dst_id: dst,
-                    kind: EdgeKind::Calls,
-                    confidence,
+                    kind: EdgeKind::Tests,
+                    confidence: Confidence::Likely,
+                    weight: 1.0,
+                })?;
+            }
+        }
+
+        for ext in std::mem::take(&mut self.pending_extends) {
+            if let Some(dst) = self.find_symbol_id(&ext.path, &ext.name) {
+                if dst != ext.src {
+                    self.store.upsert_edge(&Edge {
+                        src_id: ext.src,
+                        dst_id: dst,
+                        kind: EdgeKind::Extends,
+                        confidence: Confidence::Certain,
+                        weight: 1.0,
+                    })?;
+                    continue;
+                }
+            }
+            let candidates = self.store.symbols_by_name(&ext.name)?;
+            if candidates.len() == 1 && candidates[0].id != ext.src {
+                self.store.upsert_edge(&Edge {
+                    src_id: ext.src,
+                    dst_id: candidates[0].id,
+                    kind: EdgeKind::Extends,
+                    confidence: Confidence::Likely,
                     weight: 1.0,
                 })?;
             }
         }
         Ok(())
     }
+}
 
-    /// Рассчитывает ранги и обновляет узлы.
-    fn calculate_and_update_ranks(&mut self) -> Result<()> {
-        self.store.recompute_ranks()?;
-        Ok(())
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tokens_are_estimated_by_chars_not_bytes() {
+        // Кириллица: 8 символов -> 2 токена, а не 16/4 + запас
+        assert_eq!(estimate_tokens("привет!!"), 2);
+        assert_eq!(estimate_tokens(""), 1);
+    }
+
+    #[test]
+    fn generic_and_simple_names() {
+        assert!(is_generic_name("get"));
+        assert_eq!(simple_name("self.helper"), "helper");
+        assert_eq!(simple_name("a::b::run"), "run");
     }
 }
-
-impl Default for IndexStats {
-    fn default() -> Self {
-        Self {
-            files_scanned: 0,
-            files_indexed: 0,
-            symbols_extracted: 0,
-            imports_extracted: 0,
-            calls_extracted: 0,
-            errors: 0,
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Вспомогательные функции
-// ---------------------------------------------------------------------------
-
-fn atlas_hash(content: &str) -> String {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-    let mut hasher = DefaultHasher::new();
-    content.hash(&mut hasher);
-    format!("{:x}", hasher.finish())
-}
-
-/// Имена методов, которые есть у множества типов: связь по такому имени почти всегда ложная.
-fn is_generic_name(name: &str) -> bool {
-    const GENERIC: [&str; 24] = [
-        "new", "default", "from", "into", "clone", "fmt", "drop", "eq", "hash", "len", "get", "set",
-        "push", "pop", "insert", "remove", "next", "iter", "map", "to_string", "as_str", "unwrap",
-        "ok", "is_empty",
-    ];
-    GENERIC.contains(&name)
-}
-
-/// Убирает `.` и `..` из пути, не обращаясь к файловой системе.
-fn normalize_path(path: &Path) -> String {
-    let mut parts: Vec<String> = Vec::new();
-    for comp in path.components() {
-        match comp {
-            std::path::Component::CurDir => {}
-            std::path::Component::ParentDir => {
-                parts.pop();
-            }
-            other => parts.push(other.as_os_str().to_string_lossy().to_string()),
-        }
-    }
-    parts.join("/")
-}
-
-/// Последний сегмент имени вызова: `self.helper` -> `helper`, `a::b::run` -> `run`.
-fn simple_name(callee: &str) -> String {
-    callee
-        .rsplit(|c: char| c == '.' || c == ':')
-        .next()
-        .unwrap_or(callee)
-        .trim()
-        .to_string()
-}
-
-fn estimate_tokens(text: &str) -> i32 {
-    // Примерная оценка: 1 токен ≈ 4 символа
-    (text.len() / 4).max(1) as i32
-}
-
-fn is_test_file(path: &str) -> bool {
-    path.contains("test") || path.contains("spec")
-}
-
-fn is_generated_file(path: &str) -> bool {
-    path.contains("generated") || path.contains("build/") || path.contains("target/")
-}
-
-fn map_symbol_kind(kind: &atlas_langs::SymbolKind) -> NodeKind {
-    match kind {
-        atlas_langs::SymbolKind::Function => NodeKind::Function,
-        atlas_langs::SymbolKind::Method => NodeKind::Method,
-        atlas_langs::SymbolKind::Class => NodeKind::Class,
-        atlas_langs::SymbolKind::Interface => NodeKind::Interface,
-        atlas_langs::SymbolKind::Constant => NodeKind::Constant,
-        atlas_langs::SymbolKind::Type => NodeKind::Type,
-    }
-}
-

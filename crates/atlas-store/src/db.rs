@@ -68,7 +68,12 @@ impl Store {
     }
 
     /// Вставляет ребро в таблицу `edge`.
+    /// Если один из узлов не существует (например, был удалён при переиндексации),
+    /// ребро пропускается вместо возврата ошибки внешнего ключа.
     pub fn upsert_edge(&self, edge: &Edge) -> Result<()> {
+        if !self.node_exists(&edge.src_id)? || !self.node_exists(&edge.dst_id)? {
+            return Ok(());
+        }
         self.conn.execute(
             "INSERT OR REPLACE INTO edge (src_id, dst_id, kind, confidence, weight)
              VALUES (?1, ?2, ?3, ?4, ?5)",
@@ -137,6 +142,14 @@ impl Store {
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
             Err(e) => Err(StoreError::Sql(e)),
         }
+    }
+
+    /// Проверяет, существует ли узел с таким ID (без полной десериализации).
+    pub fn node_exists(&self, id: &uuid::Uuid) -> Result<bool> {
+        let exists: bool = self
+            .conn
+            .query_row("SELECT COUNT(*) > 0 FROM node WHERE id = ?1", params![id.to_string()], |r| r.get(0))?;
+        Ok(exists)
     }
 
     /// Находит узел по точному пути.
@@ -328,6 +341,32 @@ impl Store {
         Ok(out)
     }
 
+    /// Все узлы-файлы индекса.
+    pub fn file_nodes(&self) -> Result<Vec<Node>> {
+        let mut stmt = self
+            .conn
+            .prepare(&format!("SELECT {NODE_COLS} FROM node WHERE kind = 'file' ORDER BY path"))?;
+        let rows = stmt.query_map([], row_to_node)?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+
+    /// Все узлы-символы (всё, кроме каталогов и файлов).
+    pub fn symbol_nodes(&self) -> Result<Vec<Node>> {
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT {NODE_COLS} FROM node WHERE kind NOT IN ('dir','file') ORDER BY path, line_start"
+        ))?;
+        let rows = stmt.query_map([], row_to_node)?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+
     /// Все узлы одного файла (сам файл и символы), по порядку строк.
     pub fn nodes_in_file(&self, path: &str) -> Result<Vec<Node>> {
         let mut stmt = self.conn.prepare(&format!(
@@ -474,6 +513,153 @@ impl Store {
     pub fn transaction(&mut self) -> rusqlite::Result<rusqlite::Transaction> {
         self.conn.transaction()
     }
+
+    /// Находит узел каталога по точному пути (не путать с файлом/символом с тем же путём).
+    pub fn find_dir_node_by_path(&self, path: &str) -> Result<Option<Node>> {
+        let mut stmt = self
+            .conn
+            .prepare(&format!("SELECT {NODE_COLS} FROM node WHERE path = ?1 AND kind = 'dir'"))?;
+        let mut rows = stmt.query_map(params![path], row_to_node)?;
+        match rows.next() {
+            Some(r) => Ok(Some(r?)),
+            None => Ok(None),
+        }
+    }
+
+    /// Возвращает узлы по списку идентификаторов (порядок не гарантируется).
+    pub fn get_nodes_by_ids(&self, ids: &[uuid::Uuid]) -> Result<Vec<Node>> {
+        let mut out = Vec::with_capacity(ids.len());
+        for id in ids {
+            if let Some(node) = self.get_node(id)? {
+                out.push(node);
+            }
+        }
+        Ok(out)
+    }
+
+    /// Сохраняет настройку проекта (таблица `settings`).
+    pub fn set_setting(&self, key: &str, value: &str) -> Result<()> {
+        self.conn.execute(
+            "INSERT OR REPLACE INTO settings (key, value) VALUES (?1, ?2)",
+            params![key, value],
+        )?;
+        Ok(())
+    }
+
+    /// Читает настройку проекта.
+    pub fn get_setting(&self, key: &str) -> Result<Option<String>> {
+        let mut stmt = self.conn.prepare("SELECT value FROM settings WHERE key = ?1")?;
+        let mut rows = stmt.query_map(params![key], |r| r.get::<_, String>(0))?;
+        match rows.next() {
+            Some(r) => Ok(Some(r?)),
+            None => Ok(None),
+        }
+    }
+
+    /// Все настройки проекта.
+    pub fn all_settings(&self) -> Result<Vec<(String, String)>> {
+        let mut stmt = self.conn.prepare("SELECT key, value FROM settings ORDER BY key")?;
+        let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+
+    /// Число файлов в индексе.
+    pub fn file_count(&self) -> Result<i64> {
+        Ok(self
+            .conn
+            .query_row("SELECT COUNT(*) FROM node WHERE kind = 'file'", [], |r| r.get(0))?)
+    }
+
+    /// Самое позднее время изменения среди файлов индекса (RFC3339, лексикографически сравнимо).
+    pub fn max_file_mtime(&self) -> Result<Option<String>> {
+        let mut stmt = self.conn.prepare("SELECT MAX(mtime) FROM file_meta")?;
+        let mut rows = stmt.query_map([], |r| r.get::<_, Option<String>>(0))?;
+        match rows.next() {
+            Some(r) => Ok(r?),
+            None => Ok(None),
+        }
+    }
+
+    /// Файлы, отсортированные по времени изменения (свежие сверху).
+    pub fn files_by_mtime(&self, limit: usize) -> Result<Vec<(String, String)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT n.path, COALESCE(m.mtime, '') FROM node n
+             LEFT JOIN file_meta m ON m.node_id = n.id
+             WHERE n.kind = 'file' AND m.mtime IS NOT NULL
+             ORDER BY m.mtime DESC LIMIT ?1",
+        )?;
+        let rows = stmt.query_map(params![limit as i64], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+
+    /// Сводка журнала вызовов: инструмент, число вызовов, суммарные токены ответов.
+    pub fn call_log_summary(&self) -> Result<Vec<(String, i64, i64)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT tool, COUNT(*), COALESCE(SUM(tokens_out), 0) FROM call_log GROUP BY tool ORDER BY 3 DESC",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?))
+        })?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+
+    /// Последние записи журнала: время, инструмент, токены, идентификаторы узлов.
+    pub fn recent_calls(&self, limit: usize) -> Result<Vec<(String, String, i64, String)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT time, tool, tokens_out, COALESCE(node_ids, '') FROM call_log ORDER BY id DESC LIMIT ?1",
+        )?;
+        let rows = stmt.query_map(params![limit as i64], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, i64>(2)?,
+                r.get::<_, String>(3)?,
+            ))
+        })?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+
+    /// Удаляет каталоги, у которых не осталось дочерних узлов.
+    pub fn clear_empty_dirs(&self) -> Result<()> {
+        // Повторяем, пока есть что удалять: пустой родитель может стать пустым после удаления ребёнка
+        loop {
+            let removed = self.conn.execute(
+                "DELETE FROM node WHERE kind = 'dir'
+                 AND id NOT IN (SELECT DISTINCT parent_id FROM node WHERE parent_id IS NOT NULL)",
+                [],
+            )?;
+            if removed == 0 {
+                break;
+            }
+        }
+        Ok(())
+    }
+
+    /// Полная очистка индекса перед повторной индексацией с нуля.
+    pub fn clear_index(&self) -> Result<()> {
+        self.conn.execute_batch(
+            "DELETE FROM edge; DELETE FROM file_meta; DELETE FROM node; DELETE FROM search_fts;",
+        )?;
+        Ok(())
+    }
 }
 
 fn parse_node_kind(s: &str) -> Result<NodeKind> {
@@ -564,4 +750,20 @@ fn row_to_node(row: &rusqlite::Row<'_>) -> rusqlite::Result<Node> {
         tokens_est: row.get(11)?,
         rank: row.get(12)?,
     })
+}
+
+/// Читает файл проекта построчно с проверкой границ проекта (раздел 10.1 ТЗ).
+/// Возвращает строки файла; ошибка, если путь вне корня или файл не найден.
+pub fn read_project_lines(root: &str, rel_path: &str) -> anyhow::Result<Vec<String>> {
+    let root = std::fs::canonicalize(root)
+        .map_err(|e| anyhow::anyhow!("корень проекта недоступен: {e}"))?;
+    let full: std::path::PathBuf = root.join(rel_path);
+    let canonical = std::fs::canonicalize(&full)
+        .map_err(|_| anyhow::anyhow!("файл «{rel_path}» не найден на диске"))?;
+    if !canonical.starts_with(&root) {
+        anyhow::bail!("путь «{rel_path}» вне проекта");
+    }
+    let content = std::fs::read_to_string(&canonical)
+        .map_err(|e| anyhow::anyhow!("не удалось прочитать «{rel_path}»: {e}"))?;
+    Ok(content.lines().map(str::to_string).collect())
 }

@@ -1,5 +1,6 @@
 use anyhow::{bail, Context, Result};
-use atlas_indexer::ProjectIndexer;
+use atlas_core::filter::{filter_output, FilterOptions};
+use atlas_indexer::{FileWatcher, IncrementalUpdater, ProjectIndexer, WatchEvent};
 use atlas_mcp::{McpConfig, McpServer, Transport};
 use atlas_store::Store;
 use clap::{Parser, Subcommand};
@@ -35,6 +36,12 @@ enum Commands {
         /// Команда для выполнения
         #[arg(value_name = "COMMAND")]
         command: String,
+    },
+    /// Наблюдать за изменениями и переиндексировать по ходу дела (раздел 4.3 ТЗ)
+    Watch {
+        /// Корень проекта (по умолчанию текущий каталог)
+        #[arg(long, value_name = "PROJECT_PATH")]
+        path: Option<String>,
     },
     /// Проверка состояния индекса
     Doctor {
@@ -87,6 +94,10 @@ fn main() -> Result<()> {
                 std::process::exit(1);
             }
         }
+        Commands::Watch { path } => {
+            let root = project_root(path.as_deref())?;
+            return cmd_watch(&root);
+        }
         Commands::Doctor { project } => {
             let root = project_root(project.as_deref())?;
             let failed = doctor(&root)?;
@@ -126,7 +137,8 @@ fn open_store(root: &Path) -> Result<Store> {
 }
 
 /// Запускает команду с фильтром вывода (раздел 9.1 ТЗ).
-/// Оставляет строки с ошибками, предупреждениями и итоговую сводку.
+/// Оставляет ошибки, предупреждения и контекст вокруг них, схлопывает повторы,
+/// убирает ANSI-коды и шум из каталогов зависимостей.
 fn cmd_run(command: &str) -> Result<bool> {
     println!("🏃 Выполнение: {command}");
     use std::process::Command;
@@ -138,32 +150,18 @@ fn cmd_run(command: &str) -> Result<bool> {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
 
-    let mut failed = false;
-
-    // Выводим строки с ошибками/предупреждениями из stderr
-    for line in stderr.lines() {
-        let l = line.to_lowercase();
-        if l.contains("error") || l.contains("warning") || l.contains("fail") || l.contains("panic") {
-            println!("{line}");
-        }
+    let raw = format!("{stdout}\n{stderr}");
+    let filtered = filter_output(&raw, &FilterOptions::default());
+    if !filtered.text.trim().is_empty() {
+        println!("{}", filtered.text);
     }
 
-    // Из stdout оставляем только ошибки/предупреждения
-    for line in stdout.lines() {
-        let l = line.to_lowercase();
-        if l.contains("error") || l.contains("warning") || l.contains("fail") || l.contains("panic") {
-            println!("{line}");
-        }
-    }
-
-    // Итоговая сводка
-    if output.status.success() {
-        println!("✅ Команда выполнена успешно");
-    } else {
+    let failed = !output.status.success();
+    if failed {
         println!("❌ Команда завершилась с ошибкой (код: {:?})", output.status.code());
-        failed = true;
+    } else {
+        println!("✅ Команда выполнена успешно");
     }
-
     Ok(failed)
 }
 
@@ -223,4 +221,72 @@ fn doctor(root: &Path) -> Result<bool> {
         println!("[ OK ] связей: {}", parts.join(", "));
     }
     Ok(failed)
+}
+
+/// Наблюдает за изменениями файлов и переиндексирует их по ходу дела (раздел 4.3 ТЗ).
+/// Работает до прерывания (Ctrl+C).
+fn cmd_watch(root: &Path) -> Result<()> {
+    use std::time::Duration;
+
+    let root_str = root.to_string_lossy().to_string();
+    let mut store = open_store(root)?;
+
+    // Первичная индексация, если индекса ещё нет
+    if store.project_info()?.and_then(|p| p.1).is_none() {
+        tracing::info!("индекса ещё нет, строю сначала");
+        ProjectIndexer::new(&mut store, &root_str).index_project()?;
+    }
+
+    let mut watcher = atlas_indexer::FileWatcher::new()?;
+    watcher.watch(root)?;
+    println!("👀 Наблюдение за {} (Ctrl+C для остановки)...", root.display());
+
+    loop {
+        match watcher.next_event() {
+            Some(atlas_indexer::WatchEvent::Modified(p))
+            | Some(atlas_indexer::WatchEvent::Created(p)) => {
+                if let Ok(rel) = p.strip_prefix(root) {
+                    let rel_str = rel.to_string_lossy().to_string();
+                    if rel_str.starts_with(".atlas/") || rel_str.starts_with(".git/") {
+                        continue;
+                    }
+                    match std::fs::read_to_string(&p) {
+                        Ok(content) => {
+                            let mut upd = IncrementalUpdater::new(&mut store, &root_str);
+                            if upd.update_file(&rel_str, &content)? {
+                                println!("🔄 Переиндексирован: {}", rel_str);
+                            }
+                        }
+                        Err(_) => {}
+                    }
+                }
+            }
+            Some(atlas_indexer::WatchEvent::Deleted(p)) => {
+                if let Ok(rel) = p.strip_prefix(root) {
+                    let rel_str = rel.to_string_lossy().to_string();
+                    store.delete_nodes_by_path(&rel_str)?;
+                    store.clear_empty_dirs()?;
+                    atlas_core::ranking::recompute_ranks(&store)?;
+                    println!("🗑️  Удалён из индекса: {}", rel_str);
+                }
+            }
+            Some(atlas_indexer::WatchEvent::Renamed(from, to)) => {
+                if let Ok(rel_from) = from.strip_prefix(root) {
+                    let rel_from_str = rel_from.to_string_lossy().to_string();
+                    store.delete_nodes_by_path(&rel_from_str)?;
+                }
+                if let Ok(rel_to) = to.strip_prefix(root) {
+                    if let Ok(content) = std::fs::read_to_string(&to) {
+                        let mut upd = IncrementalUpdater::new(&mut store, &root_str);
+                        if upd.update_file(&rel_to.to_string_lossy().to_string(), &content)? {
+                            println!("🔄 Переиндексирован (переименован): {}", rel_to.to_string_lossy());
+                        }
+                    }
+                }
+                store.clear_empty_dirs()?;
+                atlas_core::ranking::recompute_ranks(&store)?;
+            }
+            None => std::thread::sleep(Duration::from_millis(200)),
+        }
+    }
 }

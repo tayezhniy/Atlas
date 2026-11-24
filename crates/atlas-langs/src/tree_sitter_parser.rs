@@ -1,9 +1,9 @@
 use crate::parser::{
-    Call, Import, ParsedFile, Symbol, SymbolKind, Visibility,
+    Call, Heritage, Import, ParsedFile, Symbol, SymbolKind, Visibility,
 };
 use anyhow::{Context, Result};
 use std::path::Path;
-use tree_sitter::{Parser, Tree};
+use tree_sitter::Parser;
 
 /// Реальный парсер на основе tree-sitter (раздел 4.2 ТЗ).
 pub struct TreeSitterParser {
@@ -62,6 +62,7 @@ impl TreeSitterParser {
         let symbols = extract_symbols(&root_node, source, lang_name)?;
         let imports = extract_imports(&root_node, source, lang_name)?;
         let calls = extract_calls(&root_node, source, lang_name)?;
+        let extends = extract_extends(&root_node, source, lang_name)?;
 
         Ok(ParsedFile {
             path: path.to_string(),
@@ -69,6 +70,7 @@ impl TreeSitterParser {
             symbols,
             imports,
             calls,
+            extends,
         })
     }
 }
@@ -156,6 +158,7 @@ fn extract_symbols_ts_js(node: &tree_sitter::Node, source: &[u8]) -> Result<Vec<
         &[
             "function_declaration",
             "class_declaration",
+            "interface_declaration",
             "method_definition",
             "lexical_declaration",
             "variable_declarator",
@@ -207,22 +210,32 @@ fn node_to_symbol(node: &tree_sitter::Node, source: &[u8], lang: &str) -> Option
     })
 }
 
-/// Извлекает имя символа из узла (первый идентификатор или NamedChild).
-fn extract_name(node: &tree_sitter::Node, source: &[u8], lang: &str) -> Option<String> {
-    // Простой подход: ищем identifier среди named children
-    find_child_by_kind(node, "identifier")
-        .and_then(|n| node_text(&n, source))
-        .or_else(|| {
-            // В TypeScript/JavaScript имя может быть в поле "name"
-            if lang == "typescript" {
-                find_child_by_kind(node, "name").and_then(|name_node| {
-                    find_child_by_kind(&name_node, "identifier")
-                        .and_then(|n| node_text(&n, source))
-                })
-            } else {
-                None
+/// Извлекает имя символа: поле `name`, затем первый подходящий именованный ребёнок.
+fn extract_name(node: &tree_sitter::Node, source: &[u8], _lang: &str) -> Option<String> {
+    if let Some(name_node) = node.child_by_field_name("name") {
+        if let Some(text) = node_text(&name_node, source) {
+            let text = text.trim().to_string();
+            if !text.is_empty() {
+                return Some(text);
             }
-        })
+        }
+    }
+    for i in 0..node.named_child_count() {
+        if let Some(child) = node.named_child(i) {
+            if matches!(
+                child.kind(),
+                "identifier" | "type_identifier" | "property_identifier" | "field_identifier"
+            ) {
+                if let Some(text) = node_text(&child, source) {
+                    let text = text.trim().to_string();
+                    if !text.is_empty() {
+                        return Some(text);
+                    }
+                }
+            }
+        }
+    }
+    None
 }
 
 /// Находит первого named child с заданным типом.
@@ -286,17 +299,140 @@ fn extract_signature(node: &tree_sitter::Node, source: &[u8]) -> Option<String> 
     }
 }
 
-/// Извлекает doc-комментарий (комментарий сразу перед узлом).
-fn extract_doc_comment(_node: &tree_sitter::Node, _source: &[u8]) -> Option<String> {
-    // tree-sitter не всегда включает комментарии в дерево в зависимости от грамматики;
-    // оставим пустым для MVP
-    None
+/// Извлекает doc-комментарий: docstring Python или комментарии непосредственно перед узлом.
+fn extract_doc_comment(node: &tree_sitter::Node, source: &[u8]) -> Option<String> {
+    if let Some(doc) = python_docstring(node, source) {
+        return Some(doc);
+    }
+
+    let mut parts: Vec<String> = Vec::new();
+    let mut expected_row = node.range().start_point.row;
+    let mut prev = node.prev_named_sibling();
+    while let Some(p) = prev {
+        let kind = p.kind();
+        let is_comment = kind.contains("comment");
+        if !is_comment {
+            break;
+        }
+        // Комментарий должен примыкать к узлу без пустых строк между ними
+        if p.range().end_point.row + 1 != expected_row {
+            break;
+        }
+        parts.push(node_text(&p, source).unwrap_or_default());
+        expected_row = p.range().start_point.row;
+        prev = p.prev_named_sibling();
+    }
+    if parts.is_empty() {
+        return None;
+    }
+    parts.reverse();
+    let cleaned = clean_doc_text(&parts.join("\n"));
+    if cleaned.is_empty() {
+        None
+    } else {
+        Some(cleaned)
+    }
+}
+
+/// Первая строка тела Python-функции/класса, если это строковый литерал.
+fn python_docstring(node: &tree_sitter::Node, source: &[u8]) -> Option<String> {
+    if !matches!(node.kind(), "function_definition" | "class_definition" | "async_function_definition") {
+        return None;
+    }
+    let body = node.child_by_field_name("body")?;
+    let first = body.named_child(0)?;
+    if first.kind() != "expression_statement" {
+        return None;
+    }
+    let literal = first.named_child(0)?;
+    if literal.kind() != "string" {
+        return None;
+    }
+    let raw = node_text(&literal, source)?;
+    let cleaned = clean_doc_text(&strip_string_quotes(&raw));
+    if cleaned.is_empty() {
+        None
+    } else {
+        Some(cleaned)
+    }
+}
+
+fn strip_string_quotes(raw: &str) -> String {
+    let t = raw.trim();
+    for q in ["\"\"\"", "'''"] {
+        if let Some(inner) = t.strip_prefix(q).and_then(|s| s.strip_suffix(q)) {
+            return inner.to_string();
+        }
+    }
+    for q in ['"', '\''] {
+        if let Some(inner) = t.strip_prefix(q).and_then(|s| s.strip_suffix(q)) {
+            return inner.to_string();
+        }
+    }
+    t.to_string()
+}
+
+/// Убирает маркеры комментариев и выравнивает отступы.
+fn clean_doc_text(text: &str) -> String {
+    let mut out: Vec<String> = Vec::new();
+    for line in text.lines() {
+        let mut l = line.trim();
+        for prefix in ["///", "//!", "//", "/**", "/*", "*/", "*", "#"] {
+            if let Some(rest) = l.strip_prefix(prefix) {
+                l = rest.trim_start();
+                break;
+            }
+        }
+        if l.is_empty() && out.last().map(|s| s.is_empty()).unwrap_or(true) {
+            continue;
+        }
+        out.push(l.to_string());
+    }
+    while out.last().map(|s| s.is_empty()).unwrap_or(false) {
+        out.pop();
+    }
+    out.join("\n").trim().to_string()
 }
 
 /// Извлекает видимость символа.
-fn extract_visibility(_node: &tree_sitter::Node, _source: &[u8], lang: &str) -> Visibility {
-    let _ = lang;
-    Visibility::Public
+fn extract_visibility(node: &tree_sitter::Node, source: &[u8], lang: &str) -> Visibility {
+    let first_line = extract_signature(node, source).unwrap_or_default();
+    match lang {
+        "rust" => {
+            let before_name = first_line
+                .split(&extract_name(node, source, lang).unwrap_or_default())
+                .next()
+                .unwrap_or("");
+            if before_name.split_whitespace().any(|w| w == "pub" || w.starts_with("pub(")) {
+                Visibility::Public
+            } else {
+                Visibility::Private
+            }
+        }
+        "typescript" => {
+            let t = first_line.trim_start();
+            if t.contains(" private ") || t.starts_with("private ") {
+                Visibility::Private
+            } else if t.contains(" protected ") || t.starts_with("protected ") {
+                Visibility::Protected
+            } else if t.starts_with("export ") || t.contains(" export ") {
+                Visibility::Public
+            } else {
+                Visibility::Package
+            }
+        }
+        "python" => {
+            let name = extract_name(node, source, lang).unwrap_or_default();
+            if name.starts_with("__") && !name.ends_with("__") {
+                Visibility::Private
+            } else if name.starts_with('_') && !name.starts_with("__") {
+                Visibility::Protected
+            } else {
+                Visibility::Public
+            }
+        }
+        _ => Visibility::Unknown,
+    }
 }
 
 /// Маппинг типа узла tree-sitter в SymbolKind.
@@ -307,6 +443,7 @@ fn map_kind(kind: &str, _lang: &str) -> SymbolKind {
             SymbolKind::Function
         }
         "struct_item" | "class_definition" | "class_declaration" => SymbolKind::Class,
+        "interface_declaration" => SymbolKind::Interface,
         "enum_item" => SymbolKind::Type,
         "trait_item" => SymbolKind::Interface,
         "impl_item" => SymbolKind::Class,
@@ -338,12 +475,13 @@ fn extract_imports_rust(node: &tree_sitter::Node, source: &[u8]) -> Result<Vec<I
     let mut imports = Vec::new();
     collect_nodes_by_type(node, source, &["use_declaration"], &mut |n, src| {
         let text = node_text(n, src).unwrap_or_default();
-        let target = extract_rust_import_target(&text);
-        imports.push(Import {
-            from: "self".to_string(),
-            to: target,
-            line: n.range().start_point.row + 1,
-        });
+        for target in rust_use_targets(&text) {
+            imports.push(Import {
+                from: "self".to_string(),
+                to: target,
+                line: n.range().start_point.row + 1,
+            });
+        }
     })?;
     Ok(imports)
 }
@@ -356,12 +494,13 @@ fn extract_imports_python(node: &tree_sitter::Node, source: &[u8]) -> Result<Vec
         &["import_statement", "import_from_statement"],
         &mut |n, src| {
             let text = node_text(n, src).unwrap_or_default();
-            let target = extract_python_import_target(&text);
-            imports.push(Import {
-                from: "self".to_string(),
-                to: target,
-                line: n.range().start_point.row + 1,
-            });
+            for target in python_import_targets(&text) {
+                imports.push(Import {
+                    from: "self".to_string(),
+                    to: target,
+                    line: n.range().start_point.row + 1,
+                });
+            }
         },
     )?;
     Ok(imports)
@@ -369,55 +508,134 @@ fn extract_imports_python(node: &tree_sitter::Node, source: &[u8]) -> Result<Vec
 
 fn extract_imports_ts_js(node: &tree_sitter::Node, source: &[u8]) -> Result<Vec<Import>> {
     let mut imports = Vec::new();
-    collect_nodes_by_type(node, source, &["import_statement"], &mut |n, src| {
-        let text = node_text(n, src).unwrap_or_default();
-        let target = extract_ts_import_target(&text);
-        imports.push(Import {
-            from: "self".to_string(),
-            to: target,
-            line: n.range().start_point.row + 1,
-        });
-    })?;
+    collect_nodes_by_type(
+        node,
+        source,
+        &["import_statement", "export_statement"],
+        &mut |n, src| {
+            let text = node_text(n, src).unwrap_or_default();
+            if let Some(target) = ts_module_specifier(&text) {
+                imports.push(Import {
+                    from: "self".to_string(),
+                    to: target,
+                    line: n.range().start_point.row + 1,
+                });
+            }
+        },
+    )?;
     Ok(imports)
 }
 
-fn extract_rust_import_target(text: &str) -> String {
-    // use foo::bar::baz; -> foo::bar::baz
-    text.trim_start_matches("use")
-        .trim_end_matches(';')
-        .trim()
-        .to_string()
+/// `use crate::a::{b, c as d};` -> ["crate::a::b", "crate::a::c"].
+fn rust_use_targets(text: &str) -> Vec<String> {
+    let mut t = text.trim();
+    if let Some(rest) = t.strip_prefix("pub ") {
+        t = rest.trim_start();
+    }
+    let t = t.strip_prefix("use ").unwrap_or(t).trim().trim_end_matches(';').trim();
+    expand_rust_use(t)
 }
 
-fn extract_python_import_target(text: &str) -> String {
-    let t = text.trim();
-    if t.starts_with("import ") {
-        t.trim_start_matches("import ").trim().to_string()
-    } else if t.starts_with("from ") {
-        let parts: Vec<&str> = t.splitn(2, " import ").collect();
-        parts
-            .get(0)
-            .map(|s| s.trim_start_matches("from ").trim().to_string())
-            .unwrap_or_default()
+fn expand_rust_use(t: &str) -> Vec<String> {
+    let t = t.trim();
+    if t.is_empty() {
+        return vec![];
+    }
+    if let Some(open) = t.find('{') {
+        if let Some(close) = t.rfind('}') {
+            let prefix = t[..open].trim_end_matches("::").trim();
+            let inner = &t[open + 1..close];
+            let mut out = Vec::new();
+            for part in split_top_level(inner, ',') {
+                let p = part.trim();
+                if p.is_empty() {
+                    continue;
+                }
+                for e in expand_rust_use(p) {
+                    out.push(if prefix.is_empty() {
+                        e
+                    } else {
+                        format!("{prefix}::{e}")
+                    });
+                }
+            }
+            return out;
+        }
+    }
+    let base = t.split(" as ").next().unwrap_or(t).trim();
+    if base.is_empty() || base == "self" || base == "*" {
+        vec![]
     } else {
-        t.to_string()
+        vec![base.to_string()]
     }
 }
 
-fn extract_ts_import_target(text: &str) -> String {
+/// `import a, b as c` -> ["a", "b"]; `from .pkg import x` -> [".pkg"].
+fn python_import_targets(text: &str) -> Vec<String> {
     let t = text.trim();
-    if let Some(from_idx) = t.find("from") {
-        let after = t[from_idx..]
-            .trim_start_matches("from")
-            .trim()
-            .trim_start_matches('"')
-            .trim_start_matches('\'')
-            .trim_end_matches('"')
-            .trim_end_matches('\'');
-        after.to_string()
-    } else {
-        t.to_string()
+    if let Some(rest) = t.strip_prefix("import ") {
+        return split_top_level(rest, ',')
+            .into_iter()
+            .filter_map(|part| {
+                let name = part.split(" as ").next().unwrap_or("").trim();
+                (!name.is_empty()).then(|| name.to_string())
+            })
+            .collect();
     }
+    if let Some(rest) = t.strip_prefix("from ") {
+        if let Some((module, _)) = rest.split_once(" import ") {
+            let module = module.trim();
+            if !module.is_empty() {
+                return vec![module.to_string()];
+            }
+        }
+    }
+    vec![]
+}
+
+/// Достаёт строковый литерал модуля из `import ... from "./x"` или `import "./x"`.
+fn ts_module_specifier(text: &str) -> Option<String> {
+    let t = text.trim();
+    if !(t.starts_with("import ") || t.starts_with("export ")) {
+        return None;
+    }
+    // Ищем последний строковый литерал в кавычках
+    let (start, quote) = t
+        .char_indices()
+        .find(|(_, c)| *c == '\'' || *c == '"')
+        .map(|(i, c)| (i, c))?;
+    let rest = &t[start + quote.len_utf8()..];
+    let end = rest.find(quote)?;
+    let spec = &rest[..end];
+    (!spec.is_empty()).then(|| spec.to_string())
+}
+
+/// Делит строку по разделителю, не заходя внутрь фигурных скобок.
+fn split_top_level(text: &str, sep: char) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut depth = 0usize;
+    let mut current = String::new();
+    for c in text.chars() {
+        match c {
+            '{' => {
+                depth += 1;
+                current.push(c);
+            }
+            '}' => {
+                depth = depth.saturating_sub(1);
+                current.push(c);
+            }
+            _ if c == sep && depth == 0 => {
+                out.push(current.trim().to_string());
+                current.clear();
+            }
+            _ => current.push(c),
+        }
+    }
+    if !current.trim().is_empty() {
+        out.push(current.trim().to_string());
+    }
+    out
 }
 
 /// Рекурсивно собирает узлы заданных типов и вызывает колбэк.
@@ -496,6 +714,108 @@ fn extract_calls_ts_js(node: &tree_sitter::Node, source: &[u8]) -> Result<Vec<Ca
         });
     })?;
     Ok(calls)
+}
+
+// ---------------------------------------------------------------------------
+// Извлечение наследования
+// ---------------------------------------------------------------------------
+
+fn extract_extends(
+    node: &tree_sitter::Node,
+    source: &[u8],
+    lang: &str,
+) -> Result<Vec<Heritage>> {
+    let mut out = Vec::new();
+    match lang {
+        "rust" => {
+            collect_nodes_by_type(node, source, &["impl_item"], &mut |n, src| {
+                let (Some(trait_node), Some(type_node)) =
+                    (n.child_by_field_name("trait"), n.child_by_field_name("type"))
+                else {
+                    return;
+                };
+                let child = last_type_segment(&node_text(&type_node, src).unwrap_or_default());
+                let parent = last_type_segment(&node_text(&trait_node, src).unwrap_or_default());
+                if !child.is_empty() && !parent.is_empty() {
+                    out.push(Heritage {
+                        child,
+                        parent,
+                        line: n.range().start_point.row + 1,
+                    });
+                }
+            })?;
+        }
+        "python" => {
+            collect_nodes_by_type(node, source, &["class_definition"], &mut |n, src| {
+                let Some(name_node) = n.child_by_field_name("name") else {
+                    return;
+                };
+                let child = last_type_segment(&node_text(&name_node, src).unwrap_or_default());
+                let Some(bases) = n.child_by_field_name("superclasses") else {
+                    return;
+                };
+                for i in 0..bases.named_child_count() {
+                    if let Some(base) = bases.named_child(i) {
+                        let parent = last_type_segment(&node_text(&base, src).unwrap_or_default());
+                        if !parent.is_empty() {
+                            out.push(Heritage {
+                                child: child.clone(),
+                                parent,
+                                line: n.range().start_point.row + 1,
+                            });
+                        }
+                    }
+                }
+            })?;
+        }
+        "typescript" => {
+            collect_nodes_by_type(
+                node,
+                source,
+                &["class_declaration", "interface_declaration"],
+                &mut |n, src| {
+                    let Some(name_node) = n.child_by_field_name("name") else {
+                        return;
+                    };
+                    let child = last_type_segment(&node_text(&name_node, src).unwrap_or_default());
+                    let text = node_text(n, src).unwrap_or_default();
+                    let header = text.split('{').next().unwrap_or(&text);
+                    for (keyword, rest) in [("extends", header), ("implements", header)] {
+                        let Some(pos) = rest.find(keyword) else {
+                            continue;
+                        };
+                        let after = &rest[pos + keyword.len()..];
+                        let after = after.split("implements").next().unwrap_or(after);
+                        for part in after.split(',') {
+                            let parent = last_type_segment(part);
+                            if !parent.is_empty() {
+                                out.push(Heritage {
+                                    child: child.clone(),
+                                    parent,
+                                    line: n.range().start_point.row + 1,
+                                });
+                            }
+                        }
+                    }
+                },
+            )?;
+        }
+        _ => {}
+    }
+    Ok(out)
+}
+
+/// Последний сегмент типа без обобщений: `crate::a::B<T>` -> `B`.
+fn last_type_segment(text: &str) -> String {
+    let t = text.trim();
+    let t = t.split('<').next().unwrap_or(t).trim();
+    let seg = t
+        .rsplit(|c: char| c == '.' || c == ':')
+        .next()
+        .unwrap_or(t)
+        .trim();
+    seg.trim_matches(|c: char| !(c.is_alphanumeric() || c == '_'))
+        .to_string()
 }
 
 /// Выражение вызова до открывающей скобки аргументов: `obj.method(x.y)` -> `obj.method`.
