@@ -1,42 +1,61 @@
 import { useEffect, useRef, useState } from 'react'
-import { GraphologyGraph } from 'graphology'
+import Graph from 'graphology'
 import Sigma from 'sigma'
 import forceAtlas2 from 'graphology-layout-forceatlas2'
 
 interface GraphProps {
-  selectedNode: string | null
-  nodes?: Array<{ id: string; label: string; kind: string; path: string }>
+  nodes?: Array<{ id: string; label: string; kind: string; path: string; rank?: number }>
   edges?: Array<{ source: string; target: string }>
+  selectedNode: string | null
 }
 
-export default function Graph({ selectedNode, nodes = [], edges = [] }: GraphProps) {
+export default function Graph({ nodes = [], edges = [], selectedNode }: GraphProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const sigmaRef = useRef<Sigma | null>(null)
-  const graphRef = useRef<GraphologyGraph | null>(null)
+  const graphRef = useRef<Graph | null>(null)
+  const [layoutRunning, setLayoutRunning] = useState(false)
 
   useEffect(() => {
     if (!containerRef.current) return
 
-    // Создаём граф graphology
-    const graph = new GraphologyGraph()
+    const graph = new Graph()
     graphRef.current = graph
+
+    // Цвета по типу узла
+    const colorFor = (kind: string) => {
+      switch (kind) {
+        case 'dir':
+          return '#3b82f6'
+        case 'file':
+          return '#10b981'
+        case 'class':
+        case 'interface':
+          return '#a855f7'
+        case 'function':
+        case 'method':
+          return '#f59e0b'
+        case 'constant':
+          return '#ef4444'
+        default:
+          return '#6b7280'
+      }
+    }
 
     // Добавляем узлы
     nodes.forEach((node) => {
-      const color = node.kind === 'file' ? '#10b981' : node.kind === 'dir' ? '#3b82f6' : '#a855f7'
       graph.addNode(node.id, {
         label: node.label,
         path: node.path,
         kind: node.kind,
-        color,
-        size: node.kind === 'file' ? 12 : node.kind === 'dir' ? 10 : 8,
+        color: colorFor(node.kind),
+        size: node.kind === 'dir' ? 10 : node.kind === 'file' ? 8 : 6,
       })
     })
 
     // Добавляем рёбра
     edges.forEach((edge) => {
       if (graph.hasNode(edge.source) && graph.hasNode(edge.target)) {
-        graph.addEdge(edge.source, edge.target)
+        graph.addEdge(edge.source, edge.target, { size: 0.5 })
       }
     })
 
@@ -44,7 +63,7 @@ export default function Graph({ selectedNode, nodes = [], edges = [] }: GraphPro
     const sigma = new Sigma(graph, containerRef.current, {
       renderLabels: true,
       labelFont: 'Inter, system-ui',
-      labelSize: 12,
+      labelSize: 11,
       labelColor: '#374151',
       labelGrid: true,
       minCameraRatio: 0.1,
@@ -58,8 +77,9 @@ export default function Graph({ selectedNode, nodes = [], edges = [] }: GraphPro
       sigma.getCamera().animatedReset({ duration: 300 })
     }
 
-    // Запускаем force-atlas2 для красивой раскладки
-    const layout = forceAtlas2.assign(graph, { iterations: 100, settings: { gravity: 0.5, slowDown: 5 } })
+    // Force-Atlas2 раскладка
+    setLayoutRunning(true)
+    const layout = forceAtlas2.infer(graph)
     const layoutInterval = setInterval(() => {
       layout.step()
       sigma.refresh()
@@ -67,6 +87,8 @@ export default function Graph({ selectedNode, nodes = [], edges = [] }: GraphPro
 
     return () => {
       clearInterval(layoutInterval)
+      layout.kill()
+      setLayoutRunning(false)
       sigma.kill()
     }
   }, [nodes, edges, selectedNode])
@@ -82,8 +104,6 @@ export default function Graph({ selectedNode, nodes = [], edges = [] }: GraphPro
     })
     if (selectedNode && graph.hasNode(selectedNode)) {
       graph.setNodeAttribute(selectedNode, 'highlighted', true)
-      // Центрируем на узле
-      const { x, y } = graph.getNodeAttributes(selectedNode) as { x: number; y: number }
       sigma.getCamera().animatedReset({ duration: 300 })
     }
     sigma.refresh()
@@ -95,13 +115,13 @@ export default function Graph({ selectedNode, nodes = [], edges = [] }: GraphPro
       className="h-full w-full bg-background border-t relative overflow-hidden"
       style={{ backgroundColor: '#fafafa' }}
     >
-      {nodes.length === 0 && (
+      {nodes.length === 0 && !layoutRunning && (
         <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
           <div className="text-center">
             <div className="w-24 h-24 rounded-full border-2 border-blue-500 flex items-center justify-center mx-auto mb-4 animate-pulse">
               <div className="w-12 h-12 rounded-full bg-blue-500/20 flex items-center justify-center">
                 <svg className="w-6 h-6 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 6.253v13m0-13C10.832 8.088 9.246 9.424 7 11.268 5.12 13.526 3 16.488 3 20c0 4.469 2.61 8.49 6.545 10.966 2.123 1.364 5.8 1.364 7.923 0 3.935-2.477 6.545-6.497 6.545-10.966 0-3.512-2.12-6.474-4-8.736A10.01 10.01 0 0 0 20 13c0-2.29-.842-4.46-2.243-6.097C16.97 7.878 14.526 7 12 7z" />
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 6.253v13m0-13C10.832 8.088 9.246 9.424 7 11.268 5.12 13.526 3 16.488 3 20c0 4.469 2.61 8.49 6.545 10.966 2.123 1.364 5.8 1.364 7.923 0 3.935-2.477 6.545-6.497 6.545-10.966 0-3.512-2.12-6.474-4-8.736A10.01 10.01 0 0 0 20 13c0-2.29-.842 4.46-2.243-6.097C16.97 7.878 14.526 7 12 7z" />
                 </svg>
               </div>
             </div>
@@ -121,8 +141,11 @@ export default function Graph({ selectedNode, nodes = [], edges = [] }: GraphPro
         <div className="flex items-center gap-2 mb-1">
           <span className="w-2 h-2 rounded-full bg-green-500"></span> Файл
         </div>
-        <div className="flex items-center gap-2">
-          <span className="w-2 h-2 rounded-full bg-purple-500"></span> Символ
+        <div className="flex items-center gap-2 mb-1">
+          <span className="w-2 h-2 rounded-full bg-purple-500"></span> Класс/Интерфейс
+        </div>
+        <div className="flex items-center gap-2 mb-1">
+          <span className="w-2 h-2 rounded-full bg-orange-500"></span> Функция/Метод
         </div>
         <div className="mt-2 text-xs text-muted-foreground">
           Колесико — зум, перетаскивание — панорамирование

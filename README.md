@@ -14,7 +14,7 @@ atlas/
     atlas-mcp/         # MCP-сервер, инструменты, бюджеты, форматирование ответов
     atlas-cli/         # команды: index, mcp, run, doctor
   app/
-    src-tauri/         # оболочка Tauri, команды между UI и ядром
+    electron/         # оболочка Electron, IPC между UI и ядром Rust
     ui/                # интерфейс: граф, дерево, просмотр, панели
   docs/                # документация
   fixtures/            # эталонные проекты для тестов
@@ -27,8 +27,8 @@ atlas/
 - Парсинг: tree-sitter
 - Хранилище: SQLite + FTS5
 - MCP: официальный Rust SDK для MCP
-- Оболочка: Tauri 2
-- Интерфейс: TypeScript + Svelte/React, Sigma.js для графа, CodeMirror 6 для просмотра кода
+- Оболочка: Electron 28
+- Интерфейс: TypeScript + React, Sigma.js для графа, CodeMirror 6 для просмотра кода
 
 ## Этапы разработки
 

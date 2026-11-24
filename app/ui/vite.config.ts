@@ -5,7 +5,7 @@ import tailwindcss from '@tailwindcss/vite'
 export default defineConfig({
   plugins: [react(), tailwindcss()],
   build: {
-    outDir: '../src-tauri/gen/dist',
+    outDir: '../electron/gen/dist',
     emptyOutDir: true,
   },
 })
