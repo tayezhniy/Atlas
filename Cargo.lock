@@ -91,7 +91,7 @@ checksum = "2cb931c189b85683d69a5cfad41d4d418671e1ac413dd209f3f2fc31e3cfd902"
 
 [[package]]
 name = "atlas-cli"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "atlas-core",
@@ -105,7 +105,7 @@ dependencies = [
 
 [[package]]
 name = "atlas-core"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "atlas-langs",
@@ -121,7 +121,7 @@ dependencies = [
 
 [[package]]
 name = "atlas-indexer"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "atlas-core",
@@ -132,6 +132,7 @@ dependencies = [
  "notify",
  "rusqlite",
  "serde",
+ "tempfile",
  "thiserror",
  "tracing",
  "uuid",
@@ -139,7 +140,7 @@ dependencies = [
 
 [[package]]
 name = "atlas-langs"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "serde",
@@ -153,7 +154,7 @@ dependencies = [
 
 [[package]]
 name = "atlas-mcp"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "atlas-core",
@@ -169,7 +170,7 @@ dependencies = [
 
 [[package]]
 name = "atlas-store"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "chrono",

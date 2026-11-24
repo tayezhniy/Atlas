@@ -19,6 +19,8 @@ impl Store {
         conn.pragma_update(None, "journal_mode", &"WAL")?;
         conn.pragma_update(None, "synchronous", &"NORMAL")?;
         conn.pragma_update(None, "foreign_keys", &"ON")?;
+        // Нужно, чтобы INSERT OR REPLACE удалял старую запись и из FTS-индекса
+        conn.pragma_update(None, "recursive_triggers", &"ON")?;
 
         Self::run_migrations(&conn)?;
         Ok(Self { conn })
@@ -240,6 +242,234 @@ impl Store {
         Ok(edges)
     }
 
+
+    /// Находит узел файла (kind = 'file') по пути. У символов путь совпадает с путём файла.
+    pub fn find_file_node_by_path(&self, path: &str) -> Result<Option<Node>> {
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT {NODE_COLS} FROM node WHERE path = ?1 AND kind = 'file'"
+        ))?;
+        let mut rows = stmt.query_map(params![path], row_to_node)?;
+        match rows.next() {
+            Some(r) => Ok(Some(r?)),
+            None => Ok(None),
+        }
+    }
+
+    /// Связи из других файлов в узлы этого файла: (ребро, имя и вид узла-цели).
+    /// Нужны, чтобы перепривязать их после переиндексации изменённого файла.
+    pub fn incoming_edges_from_other_files(&self, path: &str) -> Result<Vec<(Edge, String, String)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT e.src_id, e.dst_id, e.kind, e.confidence, e.weight, d.name, d.kind
+             FROM edge e JOIN node d ON d.id = e.dst_id JOIN node s ON s.id = e.src_id
+             WHERE d.path = ?1 AND s.path != ?1",
+        )?;
+        let rows = stmt.query_map(params![path], |row| {
+            Ok((parse_edge(row)?, row.get::<_, String>(5)?, row.get::<_, String>(6)?))
+        })?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+
+    /// Удаляет файл и все его символы вместе со связями (перед переиндексацией).
+    pub fn delete_nodes_by_path(&self, path: &str) -> Result<()> {
+        self.conn.execute(
+            "DELETE FROM edge WHERE src_id IN (SELECT id FROM node WHERE path = ?1)
+                                 OR dst_id IN (SELECT id FROM node WHERE path = ?1)",
+            params![path],
+        )?;
+        self.conn.execute(
+            "DELETE FROM file_meta WHERE node_id IN (SELECT id FROM node WHERE path = ?1)",
+            params![path],
+        )?;
+        self.conn.execute("DELETE FROM node WHERE path = ?1", params![path])?;
+        Ok(())
+    }
+
+    /// Все узлы индекса, по убыванию ранга.
+    pub fn get_all_nodes(&self) -> Result<Vec<Node>> {
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT {NODE_COLS} FROM node ORDER BY rank DESC, path, line_start"
+        ))?;
+        let rows = stmt.query_map([], row_to_node)?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+
+    /// Все рёбра индекса.
+    pub fn get_all_edges(&self) -> Result<Vec<Edge>> {
+        let mut stmt = self.conn.prepare("SELECT src_id, dst_id, kind, confidence, weight FROM edge")?;
+        let rows = stmt.query_map([], parse_edge)?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+
+    /// Все узлы заданных видов, по убыванию ранга.
+    pub fn nodes_of_kinds(&self, kinds: &[NodeKind]) -> Result<Vec<Node>> {
+        let list: Vec<String> = kinds.iter().map(|k| format!("'{}'", k)).collect();
+        let sql = format!(
+            "SELECT {NODE_COLS} FROM node WHERE kind IN ({}) ORDER BY rank DESC, path, line_start",
+            list.join(",")
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map([], row_to_node)?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+
+    /// Все узлы одного файла (сам файл и символы), по порядку строк.
+    pub fn nodes_in_file(&self, path: &str) -> Result<Vec<Node>> {
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT {NODE_COLS} FROM node WHERE path = ?1 ORDER BY (kind = 'file') DESC, line_start"
+        ))?;
+        let rows = stmt.query_map(params![path], row_to_node)?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+
+    /// Символы с точным именем (без файлов и каталогов), по убыванию ранга.
+    pub fn symbols_by_name(&self, name: &str) -> Result<Vec<Node>> {
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT {NODE_COLS} FROM node WHERE name = ?1 AND kind NOT IN ('file','dir') ORDER BY rank DESC, path"
+        ))?;
+        let rows = stmt.query_map(params![name], row_to_node)?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+
+    /// Полнотекстовый поиск по имени, сигнатуре, докстрингу и пути.
+    /// Запрос превращается в безопасное префиксное выражение FTS5.
+    pub fn search_nodes(&self, query: &str, limit: usize) -> Result<Vec<Node>> {
+        let terms: Vec<String> = query
+            .split(|c: char| !(c.is_alphanumeric() || c == '_'))
+            .filter(|t| !t.is_empty())
+            .map(|t| format!("\"{}\"*", t))
+            .collect();
+        if terms.is_empty() {
+            return Ok(Vec::new());
+        }
+        let sql = format!(
+            "SELECT {} FROM search_fts f JOIN node n ON n.rowid = f.rowid
+             WHERE search_fts MATCH ?1 AND n.kind != 'dir'
+             ORDER BY bm25(search_fts, 10.0, 3.0, 1.0, 0.5), n.rank DESC LIMIT ?2",
+            NODE_COLS_N
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map(params![terms.join(" "), limit as i64], row_to_node)?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+
+    /// Пути всех файлов, которые есть в индексе.
+    pub fn file_paths(&self) -> Result<Vec<String>> {
+        let mut stmt = self.conn.prepare("SELECT path FROM node WHERE kind = 'file'")?;
+        let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+
+    /// Пересчитывает ранги всех узлов: число входящих `imports` и `calls`, нормированное на максимум.
+    /// Считает по всему индексу, поэтому результат верен и после частичной переиндексации.
+    pub fn recompute_ranks(&self) -> Result<()> {
+        self.conn.execute(
+            "UPDATE node SET rank = 1.0 * (
+                SELECT COUNT(*) FROM edge e WHERE e.dst_id = node.id AND e.kind IN ('imports', 'calls')
+             ) / MAX(1, COALESCE((
+                SELECT MAX(c) FROM (
+                    SELECT COUNT(*) AS c FROM edge WHERE kind IN ('imports', 'calls') GROUP BY dst_id
+                )
+             ), 1))
+             WHERE kind != 'dir'",
+            [],
+        )?;
+        Ok(())
+    }
+
+    /// Обновляет ранг узла.
+    pub fn set_rank(&self, id: &uuid::Uuid, rank: f64) -> Result<()> {
+        self.conn.execute(
+            "UPDATE node SET rank = ?1 WHERE id = ?2",
+            params![rank, id.to_string()],
+        )?;
+        Ok(())
+    }
+
+    /// Корень проекта и время последней индексации (если проект уже индексировался).
+    pub fn project_info(&self) -> Result<Option<(String, Option<String>)>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT root_path, last_indexed_at FROM project ORDER BY created_at DESC LIMIT 1")?;
+        let mut rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?)))?;
+        match rows.next() {
+            Some(r) => Ok(Some(r?)),
+            None => Ok(None),
+        }
+    }
+
+    /// Количество узлов каждого вида.
+    pub fn count_by_kind(&self) -> Result<Vec<(String, i64)>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT kind, COUNT(*) FROM node GROUP BY kind ORDER BY COUNT(*) DESC")?;
+        let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+
+    /// Количество рёбер каждого вида.
+    pub fn count_edges_by_kind(&self) -> Result<Vec<(String, i64)>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT kind, COUNT(*) FROM edge GROUP BY kind ORDER BY COUNT(*) DESC")?;
+        let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+
+    /// Записывает вызов инструмента в журнал (раздел 10.3 ТЗ).
+    pub fn log_call(&self, session_id: &str, tool: &str, args: &str, tokens_out: usize, node_ids: &str) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO call_log (session_id, tool, args, tokens_out, node_ids) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![session_id, tool, args, tokens_out as i64, node_ids],
+        )?;
+        Ok(())
+    }
+
+    /// Проверка целостности базы для `atlas doctor`.
+    pub fn integrity_check(&self) -> Result<String> {
+        let r: String = self.conn.query_row("PRAGMA integrity_check", [], |r| r.get(0))?;
+        Ok(r)
+    }
+
     /// Начинает транзакцию для пакетной записи (используется индексатором).
     pub fn transaction(&mut self) -> rusqlite::Result<rusqlite::Transaction> {
         self.conn.transaction()
@@ -302,3 +532,36 @@ fn parse_edge(row: &rusqlite::Row<'_>) -> rusqlite::Result<Edge> {
 }
 
 use crate::schema::Confidence;
+
+const NODE_COLS: &str = "id, kind, path, name, parent_id, lang, hash, line_start, line_end, signature, doc_summary, tokens_est, rank";
+const NODE_COLS_N: &str = "n.id, n.kind, n.path, n.name, n.parent_id, n.lang, n.hash, n.line_start, n.line_end, n.signature, n.doc_summary, n.tokens_est, n.rank";
+
+fn row_to_node(row: &rusqlite::Row<'_>) -> rusqlite::Result<Node> {
+    let conv = |i: usize, e: Box<dyn std::error::Error + Send + Sync>| {
+        rusqlite::Error::FromSqlConversionFailure(i, rusqlite::types::Type::Text, e)
+    };
+    let id_str: String = row.get(0)?;
+    let id = uuid::Uuid::parse_str(&id_str).map_err(|e| conv(0, Box::new(e)))?;
+    let kind_str: String = row.get(1)?;
+    let kind = parse_node_kind(&kind_str).map_err(|e| conv(1, Box::new(e)))?;
+    let parent: Option<String> = row.get(4)?;
+    let parent_id = match parent {
+        Some(s) => Some(uuid::Uuid::parse_str(&s).map_err(|e| conv(4, Box::new(e)))?),
+        None => None,
+    };
+    Ok(Node {
+        id,
+        kind,
+        path: row.get(2)?,
+        name: row.get(3)?,
+        parent_id,
+        lang: row.get(5)?,
+        hash: row.get(6)?,
+        line_start: row.get(7)?,
+        line_end: row.get(8)?,
+        signature: row.get(9)?,
+        doc_summary: row.get(10)?,
+        tokens_est: row.get(11)?,
+        rank: row.get(12)?,
+    })
+}

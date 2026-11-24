@@ -1,5 +1,6 @@
 [package]
 name = "atlas-mcp"
+version.workspace = true
 description = "MCP-сервер Atlas: протокол, инструменты, бюджеты, форматирование ответов, журнал"
 authors = ["Дмитрий"]
 edition = "2021"

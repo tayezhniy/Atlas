@@ -1,5 +1,6 @@
 [package]
 name = "atlas-langs"
+version.workspace = true
 description = "Языковые плагины Atlas: запросы tree-sitter по языкам (parsing plugins)"
 authors = ["Дмитрий"]
 edition = "2021"

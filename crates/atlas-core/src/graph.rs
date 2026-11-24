@@ -86,15 +86,35 @@ impl KnowledgeGraph {
 }
 
 /// Строит граф в памяти из хранилища, применяя ранжирование.
-pub fn build_graph(store: &Store, ranker: &Ranker) -> anyhow::Result<KnowledgeGraph> {
+pub fn build_graph(store: &Store, _ranker: &Ranker) -> anyhow::Result<KnowledgeGraph> {
     let mut graph = KnowledgeGraph::new();
 
-    // Загружаем все узлы
-    let nodes: Vec<Node> = vec![]; // TODO: загрузить из store
-    let _ = nodes;
+    // Загружаем все узлы индекса и добавляем их в граф
+    let nodes = store.get_all_nodes()?;
+    for node in &nodes {
+        graph.add_node(NodeRef {
+            id: node.id,
+            kind: node.kind.clone(),
+            path: node.path.clone(),
+            name: node.name.clone(),
+            rank: node.rank,
+        });
+    }
 
-    // TODO: загрузить рёбра и применить ранжирование
-    let _ = ranker;
+    // Загружаем рёбра; рёбра к отсутствующим узлам пропускаются внутри add_edge
+    let edges = store.get_all_edges()?;
+    for edge in &edges {
+        graph.add_edge(
+            edge.src_id,
+            edge.dst_id,
+            EdgeRef {
+                src_id: edge.src_id,
+                dst_id: edge.dst_id,
+                kind: edge.kind.clone(),
+                weight: edge.weight,
+            },
+        );
+    }
 
     Ok(graph)
 }

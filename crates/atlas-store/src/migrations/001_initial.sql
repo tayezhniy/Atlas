@@ -71,14 +71,14 @@ CREATE TABLE IF NOT EXISTS summary (
     FOREIGN KEY (node_id) REFERENCES node(id)
 );
 
--- Таблица search_fts: полнотекстовый индекс (FTS5)
+-- Таблица search_fts: полнотекстовый индекс (FTS5).
+-- Самостоятельная таблица (не external content): у node нет колонки doc, а rowid
+-- берётся из node.rowid, поэтому поиск соединяется с node по rowid.
 CREATE VIRTUAL TABLE IF NOT EXISTS search_fts USING fts5(
     name,
     signature,
     doc,
-    path,
-    content=node,
-    content_rowid=id
+    path
 );
 
 -- Таблица call_log: журнал запросов нейросети (раздел 5.1)
@@ -106,17 +106,15 @@ CREATE TABLE IF NOT EXISTS settings (
 -- Триггеры для поддержки FTS при вставке/обновлении/удалении узлов
 CREATE TRIGGER IF NOT EXISTS node_ai AFTER INSERT ON node BEGIN
     INSERT INTO search_fts (rowid, name, signature, doc, path)
-    VALUES (new.id, new.name, new.signature, new.doc_summary, new.path);
+    VALUES (new.rowid, new.name, COALESCE(new.signature, ''), COALESCE(new.doc_summary, ''), new.path);
 END;
 
 CREATE TRIGGER IF NOT EXISTS node_ad AFTER DELETE ON node BEGIN
-    INSERT INTO search_fts (search_fts, rowid, name, signature, doc, path)
-    VALUES ('delete', old.id, old.name, old.signature, old.doc_summary, old.path);
+    DELETE FROM search_fts WHERE rowid = old.rowid;
 END;
 
 CREATE TRIGGER IF NOT EXISTS node_au AFTER UPDATE ON node BEGIN
-    INSERT INTO search_fts (search_fts, rowid, name, signature, doc, path)
-    VALUES ('delete', old.id, old.name, old.signature, old.doc_summary, old.path);
+    DELETE FROM search_fts WHERE rowid = old.rowid;
     INSERT INTO search_fts (rowid, name, signature, doc, path)
-    VALUES (new.id, new.name, new.signature, new.doc_summary, new.path);
+    VALUES (new.rowid, new.name, COALESCE(new.signature, ''), COALESCE(new.doc_summary, ''), new.path);
 END;

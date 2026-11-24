@@ -1,5 +1,6 @@
 [package]
 name = "atlas-cli"
+version.workspace = true
 description = "CLI Atlas: команды index, mcp, run, doctor"
 authors = ["Дмитрий"]
 edition = "2021"

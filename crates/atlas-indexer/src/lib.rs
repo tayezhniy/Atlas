@@ -7,3 +7,4 @@ pub mod indexer;
 pub use walker::{ProjectWalker, WalkOptions, WalkedFile};
 pub use watcher::{FileWatcher, WatchEvent};
 pub use indexer::{ProjectIndexer, IndexStats};
+pub use incremental::IncrementalUpdater;
