@@ -1,5 +1,6 @@
 [package]
 name = "atlas-indexer"
+version.workspace = true
 description = "Индексатор Atlas: обход файлов, парсинг,observation, инкрементальное обновление"
 authors = ["Дмитрий"]
 edition = "2021"
@@ -17,3 +18,5 @@ tracing = { workspace = true }
 ignore = { workspace = true }
 notify = { workspace = true }
 rusqlite = { workspace = true }
+[dev-dependencies]
+tempfile = "3"

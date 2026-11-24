@@ -25,25 +25,36 @@ $ATLAS_BIN index "$PROJECT_PATH"
 
 # 2. Проверка состояния индекса
 echo "[2/4] Проверка состояния..."
-$ATLAS_BIN doctor
+$ATLAS_BIN doctor --project "$PROJECT_PATH"
 
-# 3. Запуск MCP-сервера
-echo "[3/4] Запуск MCP-сервера..."
-$ATLAS_BIN mcp &
-MCP_PID=$!
-sleep 2
-
+# 3. Подключение клиента. MCP по stdio запускает сам клиент, поэтому скрипт сервер не стартует:
+#    нужно добавить в конфигурацию клиента (Claude и др.) такую запись.
+ABS_PROJECT="$(cd "$PROJECT_PATH" && pwd)"
+ABS_BIN="$(cd "$(dirname "$ATLAS_BIN")" && pwd)/$(basename "$ATLAS_BIN")"
+echo "[3/4] Подключите MCP-сервер к клиенту:"
+cat <<JSON
+{
+  "mcpServers": {
+    "atlas": { "command": "$ABS_BIN", "args": ["mcp", "--project", "$ABS_PROJECT"] }
+  }
+}
+JSON
 echo ""
-echo "MCP-сервер запущен (PID: $MCP_PID)"
-echo "Выполните задачу '$TASK' через MCP-клиент (Claude и т.д.)"
-echo ""
-echo "После завершения нажмите Enter для остановки сервера..."
+echo "Выполните задачу '$TASK' в клиенте, затем нажмите Enter."
 read -r
 
-# 4. Остановка
-echo "[4/4] Остановка MCP-сервера..."
-kill $MCP_PID 2>/dev/null || true
+# 4. Итоги из журнала вызовов (call_log)
+echo "[4/4] Вызовы и токены за сессию:"
+python3 -I - "$ABS_PROJECT/.atlas/index.db" <<'PY'
+import sqlite3, sys
+c = sqlite3.connect(sys.argv[1])
+rows = list(c.execute("SELECT tool, COUNT(*), SUM(tokens_out) FROM call_log GROUP BY tool ORDER BY 3 DESC"))
+if not rows:
+    print("  вызовов нет")
+for tool, n, tokens in rows:
+    print(f"  {tool:12} вызовов {n:3}  токенов ответа ~{tokens}")
+print(f"  всего: вызовов {sum(r[1] for r in rows)}, токенов ответа ~{sum(r[2] for r in rows)}")
+PY
 
 echo ""
 echo "=== Замер завершен ==="
-echo "Результаты смотрите в панели расхода токенов (UI) или в call_log БД."

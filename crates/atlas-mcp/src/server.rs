@@ -1,6 +1,11 @@
-use atlas_core::KnowledgeGraph;
+use crate::tools::{Tool, ToolContext, ToolRegistry};
+use anyhow::{bail, Result};
 use atlas_store::Store;
-use anyhow::Result;
+use serde_json::{json, Value};
+use std::io::{BufRead, Write};
+
+/// Версия протокола, которую сервер называет, если клиент свою не прислал.
+const DEFAULT_PROTOCOL: &str = "2024-11-05";
 
 /// Конфигурация MCP-сервера (раздел 8.1 ТЗ).
 #[derive(Debug, Clone)]
@@ -21,56 +26,201 @@ impl Default for McpConfig {
         Self {
             transport: Transport::Stdio,
             token: None,
-            budget_default: 2000,
+            // 0 = без общего потолка: у каждого инструмента свой бюджет по умолчанию
+            budget_default: 0,
         }
     }
 }
 
-/// MCP-сервер Atlas (раздел 8 ТЗ).
+/// MCP-сервер Atlas (раздел 8 ТЗ): JSON-RPC 2.0, по одному сообщению в строке.
 pub struct McpServer {
     config: McpConfig,
-    store: Store,
-    graph: KnowledgeGraph,
+    registry: ToolRegistry,
+    project_root: String,
+    session_id: String,
 }
 
 impl McpServer {
-    pub fn new(config: McpConfig, store: Store, graph: KnowledgeGraph) -> Self {
+    pub fn new(config: McpConfig, store: Store, project_root: String) -> Self {
         Self {
             config,
-            store,
-            graph,
+            registry: ToolRegistry::new(store),
+            project_root,
+            session_id: uuid::Uuid::new_v4().to_string(),
         }
     }
 
     pub fn run(self) -> Result<()> {
-        match self.config.transport {
+        match self.config.transport.clone() {
             Transport::Stdio => self.run_stdio(),
-            Transport::Http { port } => self.run_http(port),
+            Transport::Http { .. } => {
+                bail!("HTTP-транспорт ещё не реализован (раздел 8.1 ТЗ); используйте stdio")
+            }
         }
     }
 
-    fn run_stdio(self) -> Result<()> {
-        tracing::info!("MCP-сервер запущен в режиме stdio");
-        // TODO: интеграция с mpc crate
+    fn run_stdio(mut self) -> Result<()> {
+        tracing::info!("MCP-сервер запущен (stdio), проект: {}", self.project_root);
+        let stdin = std::io::stdin();
+        let mut stdout = std::io::stdout().lock();
+        for line in stdin.lock().lines() {
+            let line = line?;
+            if line.trim().is_empty() {
+                continue;
+            }
+            if let Some(reply) = self.handle_message(&line) {
+                writeln!(stdout, "{reply}")?;
+                stdout.flush()?;
+            }
+        }
+        tracing::info!("stdin закрыт, сервер остановлен");
         Ok(())
     }
 
-    fn run_http(self, _port: u16) -> Result<()> {
-        tracing::info!("MCP-сервер запущен в режиме HTTP на 127.0.0.1");
-        Ok(())
+    /// Обрабатывает одно входящее сообщение. Для уведомлений ответа нет.
+    pub fn handle_message(&mut self, line: &str) -> Option<String> {
+        let msg: Value = match serde_json::from_str(line) {
+            Ok(v) => v,
+            Err(e) => {
+                return Some(error_reply(Value::Null, -32700, &format!("некорректный JSON: {e}")).to_string());
+            }
+        };
+        let id = msg.get("id").cloned();
+        let method = msg.get("method").and_then(Value::as_str).unwrap_or("");
+        let params = msg.get("params").cloned().unwrap_or(Value::Null);
+
+        // Нет id — уведомление (например, notifications/initialized): отвечать нельзя
+        let id = match id {
+            Some(id) => id,
+            None => return None,
+        };
+
+        let reply = match method {
+            "initialize" => {
+                let version = params
+                    .get("protocolVersion")
+                    .and_then(Value::as_str)
+                    .unwrap_or(DEFAULT_PROTOCOL);
+                ok_reply(
+                    id,
+                    json!({
+                        "protocolVersion": version,
+                        "capabilities": {"tools": {}},
+                        "serverInfo": {"name": "atlas", "version": env!("CARGO_PKG_VERSION")},
+                        "instructions": "Atlas — карта проекта. Начните с overview, затем search/outline, код читайте через read или context_for."
+                    }),
+                )
+            }
+            "ping" => ok_reply(id, json!({})),
+            "tools/list" => {
+                let tools: Vec<Value> = self
+                    .registry
+                    .list_tools()
+                    .iter()
+                    .map(|t| {
+                        json!({
+                            "name": t.name(),
+                            "description": t.description(),
+                            "inputSchema": t.input_schema(),
+                        })
+                    })
+                    .collect();
+                ok_reply(id, json!({"tools": tools}))
+            }
+            "tools/call" => self.call_tool(id, &params),
+            other => error_reply(id, -32601, &format!("метод не поддерживается: {other}")),
+        };
+        Some(reply.to_string())
     }
+
+    fn call_tool(&mut self, id: Value, params: &Value) -> Value {
+        let name = params.get("name").and_then(Value::as_str).unwrap_or("");
+        let Some(tool) = Tool::from_name(name) else {
+            return error_reply(id, -32602, &format!("неизвестный инструмент: {name}"));
+        };
+        let args = params.get("arguments").cloned().unwrap_or_else(|| json!({}));
+        let ctx = ToolContext::new(
+            self.session_id.clone(),
+            tool.clone(),
+            self.config.budget_default,
+            self.project_root.clone(),
+        )
+        .with_args(args);
+
+        // Ошибки инструмента — не ошибки протокола: модель должна их увидеть и поправить вызов
+        match self.registry.execute(&tool, &ctx) {
+            Ok(result) => ok_reply(id, json!({"content": [{"type": "text", "text": result.text}], "isError": false})),
+            Err(e) => ok_reply(id, json!({"content": [{"type": "text", "text": e.to_string()}], "isError": true})),
+        }
+    }
+}
+
+fn ok_reply(id: Value, result: Value) -> Value {
+    json!({"jsonrpc": "2.0", "id": id, "result": result})
+}
+
+fn error_reply(id: Value, code: i32, message: &str) -> Value {
+    json!({"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": message}})
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn server() -> (tempfile::TempDir, McpServer) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().join("i.db")).unwrap();
+        let s = McpServer::new(McpConfig::default(), store, dir.path().to_string_lossy().to_string());
+        (dir, s)
+    }
+
+    fn call(s: &mut McpServer, msg: Value) -> Value {
+        serde_json::from_str(&s.handle_message(&msg.to_string()).expect("ожидался ответ")).unwrap()
+    }
+
     #[test]
     fn test_config_default() {
-        let config = McpConfig::default();
-        match config.transport {
+        match McpConfig::default().transport {
             Transport::Stdio => {}
             _ => panic!("expected stdio"),
         }
+    }
+
+    #[test]
+    fn initialize_echoes_protocol_and_lists_tools() {
+        let (_d, mut s) = server();
+        let r = call(&mut s, json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26"}}));
+        assert_eq!(r["result"]["protocolVersion"], "2025-03-26");
+        assert_eq!(r["result"]["serverInfo"]["name"], "atlas");
+        let r = call(&mut s, json!({"jsonrpc":"2.0","id":2,"method":"tools/list"}));
+        let names: Vec<&str> = r["result"]["tools"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
+        assert_eq!(names, ["overview", "search", "outline", "read", "neighbors", "context_for", "status"]);
+    }
+
+    #[test]
+    fn notifications_get_no_reply() {
+        let (_d, mut s) = server();
+        assert!(s.handle_message(r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#).is_none());
+    }
+
+    #[test]
+    fn tool_call_and_tool_error() {
+        let (_d, mut s) = server();
+        let ok = call(&mut s, json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"status","arguments":{}}}));
+        assert_eq!(ok["result"]["isError"], false);
+        assert!(ok["result"]["content"][0]["text"].as_str().unwrap().contains("Состояние индекса"));
+        let bad = call(&mut s, json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"read","arguments":{"symbol":"nope"}}}));
+        assert_eq!(bad["result"]["isError"], true);
+    }
+
+    #[test]
+    fn protocol_errors() {
+        let (_d, mut s) = server();
+        let r = call(&mut s, json!({"jsonrpc":"2.0","id":5,"method":"nope"}));
+        assert_eq!(r["error"]["code"], -32601);
+        let r = call(&mut s, json!({"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"zzz"}}));
+        assert_eq!(r["error"]["code"], -32602);
+        let r: Value = serde_json::from_str(&s.handle_message("{не json").unwrap()).unwrap();
+        assert_eq!(r["error"]["code"], -32700);
     }
 }

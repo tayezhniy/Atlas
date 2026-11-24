@@ -33,6 +33,23 @@ pub struct ProjectIndexer<'a> {
     file_node_ids: HashMap<String, Uuid>,
     // Кэш ID узлов символов по qualified имени для построения рёбер calls
     symbol_node_ids: HashMap<String, Uuid>,
+    // Вызовы и импорты разрешаются после обхода всех файлов: цель может быть ещё не проиндексирована
+    pending_calls: Vec<PendingCall>,
+    pending_imports: Vec<PendingImport>,
+    // Входящие связи из неизменённых файлов в изменённый: (ребро, путь, имя и вид цели)
+    preserved_edges: Vec<(Edge, String, String, String)>,
+}
+
+struct PendingCall {
+    src: Uuid,
+    path: String,
+    callee: String,
+}
+
+struct PendingImport {
+    src: Uuid,
+    from_path: String,
+    target: String,
 }
 
 impl<'a> ProjectIndexer<'a> {
@@ -45,6 +62,9 @@ impl<'a> ProjectIndexer<'a> {
             stats: IndexStats::default(),
             file_node_ids: HashMap::new(),
             symbol_node_ids: HashMap::new(),
+            pending_calls: Vec::new(),
+            pending_imports: Vec::new(),
+            preserved_edges: Vec::new(),
         }
     }
 
@@ -73,10 +93,22 @@ impl<'a> ProjectIndexer<'a> {
             }
         }
 
-        // 4. Рассчитываем ранги и обновляем узлы
+        // Файлы, удалённые с диска, убираем из индекса вместе со связями
+        let on_disk: std::collections::HashSet<String> =
+            files.iter().map(|f| self.relative_path(&f.path)).collect();
+        for indexed in self.store.file_paths()? {
+            if !on_disk.contains(&indexed) {
+                self.store.delete_nodes_by_path(&indexed)?;
+            }
+        }
+
+        // 4. Разрешаем связи, когда все узлы уже в базе
+        self.resolve_pending()?;
+
+        // 5. Рассчитываем ранги и обновляем узлы
         self.calculate_and_update_ranks()?;
 
-        // 5. Сохраняем метаданные проекта
+        // 6. Сохраняем метаданные проекта
         self.store.conn_mut().execute(
             "UPDATE project SET last_indexed_at = ?1 WHERE root_path = ?2",
             params![Utc::now().to_rfc3339(), self.root_path],
@@ -93,9 +125,18 @@ impl<'a> ProjectIndexer<'a> {
         Ok(self.stats.clone())
     }
 
+    /// Путь файла относительно корня проекта, с разделителем `/`.
+    fn relative_path(&self, path: &Path) -> String {
+        path.strip_prefix(&self.root_path)
+            .unwrap_or(path)
+            .to_string_lossy()
+            .replace('\\', "/")
+    }
+
     /// Индексация одного файла.
     fn index_file(&mut self, walked: &WalkedFile) -> Result<()> {
-        let path_str = walked.path.to_string_lossy().to_string();
+        // В индексе хранятся пути относительно корня проекта (раздел 5.4 ТЗ)
+        let path_str = self.relative_path(&walked.path);
 
         // Читаем содержимое файла
         let content = match std::fs::read_to_string(&walked.path) {
@@ -111,16 +152,31 @@ impl<'a> ProjectIndexer<'a> {
         let hash = atlas_hash(&content);
 
         // Проверяем, нужно ли переиндексировать (по хешу)
-        if let Some(existing) = self.store.find_node_by_path(&path_str)? {
+        if let Some(existing) = self.store.find_file_node_by_path(&path_str)? {
             if existing.hash.as_ref() == Some(&hash) {
                 debug!("Файл не изменился, пропускаем: {}", path_str);
+                // Узел остаётся прежним, но его id нужен для связей из других файлов
+                self.file_node_ids.insert(path_str.clone(), existing.id);
                 return Ok(());
             }
+            // Файл изменился: убираем старые узлы и связи, чтобы не копились дубликаты.
+            // Связи из других (неизменённых) файлов запоминаем: сами они не пересоберутся.
+            for (edge, name, kind) in self.store.incoming_edges_from_other_files(&path_str)? {
+                self.preserved_edges.push((edge, path_str.clone(), name, kind));
+            }
+            self.store.delete_nodes_by_path(&path_str)?;
         }
 
-        // Парсим файл
+        // Парсим файл. Неподдерживаемый язык — не ошибка: файл попадает в индекс как узел без символов
         let parsed = match self.parser.parse(&path_str, &content) {
             Ok(p) => p,
+            Err(e) if e.to_string().contains("unsupported language") => atlas_langs::ParsedFile {
+                path: path_str.clone(),
+                language: walked.language.clone().unwrap_or_default(),
+                symbols: Vec::new(),
+                imports: Vec::new(),
+                calls: Vec::new(),
+            },
             Err(e) => {
                 warn!("Ошибка парсинга файла {}: {}", path_str, e);
                 self.stats.errors += 1;
@@ -136,7 +192,7 @@ impl<'a> ProjectIndexer<'a> {
             path: path_str.clone(),
             name: walked.path.file_name().unwrap_or_default().to_string_lossy().to_string(),
             parent_id: self.parent_id_for_path(&path_str)?,
-            lang: Some(parsed.language.clone()),
+            lang: if parsed.language.is_empty() { None } else { Some(parsed.language.clone()) },
             hash: Some(hash),
             line_start: None,
             line_end: None,
@@ -190,36 +246,40 @@ impl<'a> ProjectIndexer<'a> {
             self.stats.symbols_extracted += 1;
         }
 
-        // Вставляем импорты (рёбра imports между файлами)
+        // Импорты: связь файл -> файл, разрешается в конце обхода
         for imp in &parsed.imports {
-            let _import_id = Uuid::new_v4();
-            // Ищем целевой файл по пути импорта
-            if let Some(dst_id) = self.resolve_import_target(&imp.to, &path_str)? {
-                let edge = Edge {
-                    src_id: file_id,
-                    dst_id,
-                    kind: EdgeKind::Imports,
-                    confidence: atlas_store::schema::Confidence::Certain,
-                    weight: 1.0,
-                };
-                self.store.upsert_edge(&edge)?;
-            }
+            self.pending_imports.push(PendingImport {
+                src: file_id,
+                from_path: path_str.clone(),
+                target: imp.to.clone(),
+            });
             self.stats.imports_extracted += 1;
         }
 
-        // Вставляем вызовы (рёбра calls между символами)
+        // Вызовы: вызывающий — самый внутренний символ файла, чей диапазон строк содержит вызов
         for call in &parsed.calls {
-            let caller_id = self.find_symbol_id(&path_str, &call.caller);
-            let callee_id = self.find_symbol_id(&path_str, &call.callee);
-            if let (Some(src), Some(dst)) = (caller_id, callee_id) {
-                let edge = Edge {
-                    src_id: src,
-                    dst_id: dst,
-                    kind: EdgeKind::Calls,
-                    confidence: atlas_store::schema::Confidence::Certain,
-                    weight: 1.0,
-                };
-                self.store.upsert_edge(&edge)?;
+            let caller = parsed
+                .symbols
+                .iter()
+                .filter(|sy| {
+                    matches!(sy.kind, atlas_langs::SymbolKind::Function | atlas_langs::SymbolKind::Method)
+                        && sy.line_start <= call.line
+                        && call.line <= sy.line_end
+                })
+                .min_by_key(|sy| sy.line_end - sy.line_start);
+            if is_generic_name(&simple_name(&call.callee)) {
+                // `new`, `default`, `get`… есть почти у каждого типа; без анализа типов связь была бы догадкой
+                self.stats.calls_extracted += 1;
+                continue;
+            }
+            if let Some(caller) = caller {
+                if let Some(src) = self.find_symbol_id(&path_str, &caller.name) {
+                    self.pending_calls.push(PendingCall {
+                        src,
+                        path: path_str.clone(),
+                        callee: simple_name(&call.callee),
+                    });
+                }
             }
             self.stats.calls_extracted += 1;
         }
@@ -293,23 +353,38 @@ impl<'a> ProjectIndexer<'a> {
     }
 
     /// Разрешает цель импорта в ID узла файла.
+    /// Пробует путь как есть, относительный путь от импортирующего файла и имя модуля
+    /// (`pkg.mod` -> `pkg/mod.py`) с типичными расширениями и индексными файлами.
     fn resolve_import_target(&mut self, import_target: &str, from_path: &str) -> Result<Option<Uuid>> {
-        // Прямой путь к файлу
-        if let Some(node_id) = self.file_node_ids.get(import_target) {
-            return Ok(Some(*node_id));
+        const SUFFIXES: [&str; 10] = [
+            "", ".py", "/__init__.py", ".ts", ".tsx", ".js", ".jsx", "/index.ts", "/index.js", ".rs",
+        ];
+        let target = import_target.trim();
+        if target.is_empty() {
+            return Ok(None);
         }
-        // Попробуем как относительный путь от корня
-        let full_path = if import_target.starts_with("./") || import_target.starts_with("../") {
-            let resolved = Path::new(from_path)
-                .parent()
-                .unwrap_or(Path::new(""))
-                .join(import_target);
-            resolved.to_string_lossy().to_string()
+        let mut bases: Vec<String> = Vec::new();
+        if target.starts_with("./") || target.starts_with("../") {
+            let dir = Path::new(from_path).parent().unwrap_or(Path::new(""));
+            bases.push(normalize_path(&dir.join(target)));
         } else {
-            import_target.to_string()
-        };
-        if let Some(node_id) = self.file_node_ids.get(&full_path) {
-            return Ok(Some(*node_id));
+            bases.push(normalize_path(Path::new(target)));
+            if !target.contains('/') {
+                bases.push(target.replace('.', "/"));
+            }
+        }
+        for base in &bases {
+            for suffix in SUFFIXES {
+                let candidate = format!("{}{}", base, suffix);
+                // Каталоги тоже лежат в file_node_ids: у файла в имени есть расширение
+                let has_ext = Path::new(&candidate).extension().is_some();
+                if !has_ext {
+                    continue;
+                }
+                if let Some(id) = self.file_node_ids.get(&candidate) {
+                    return Ok(Some(*id));
+                }
+            }
         }
         Ok(None)
     }
@@ -319,17 +394,69 @@ impl<'a> ProjectIndexer<'a> {
         self.symbol_node_ids.get(&format!("{}::{}", path, symbol_name)).copied()
     }
 
+    /// Превращает собранные вызовы и импорты в рёбра графа.
+    /// Вызов в том же файле — `certain`; единственный символ с таким именем в проекте — `likely`;
+    /// несколько кандидатов — связь не создаётся (лучше пропуск, чем неверная связь).
+    fn resolve_pending(&mut self) -> Result<()> {
+        use atlas_store::schema::Confidence;
+
+        let imports = std::mem::take(&mut self.pending_imports);
+        for imp in imports {
+            if let Some(dst) = self.resolve_import_target(&imp.target, &imp.from_path)? {
+                if dst != imp.src {
+                    self.store.upsert_edge(&Edge {
+                        src_id: imp.src,
+                        dst_id: dst,
+                        kind: EdgeKind::Imports,
+                        confidence: Confidence::Certain,
+                        weight: 1.0,
+                    })?;
+                }
+            }
+        }
+
+        // Входящие связи из неизменённых файлов: перепривязываем к новым узлам по пути и имени.
+        // Если символ переименован или удалён, связь исчезает — так и должно быть.
+        for (edge, path, name, kind) in std::mem::take(&mut self.preserved_edges) {
+            let new_dst = if kind == "file" {
+                self.file_node_ids.get(&path).copied()
+            } else {
+                self.find_symbol_id(&path, &name)
+            };
+            if let Some(dst_id) = new_dst {
+                self.store.upsert_edge(&Edge { dst_id, ..edge })?;
+            }
+        }
+
+        let calls = std::mem::take(&mut self.pending_calls);
+        for call in calls {
+            let same_file = self.find_symbol_id(&call.path, &call.callee);
+            let (dst, confidence) = if let Some(id) = same_file {
+                (id, Confidence::Certain)
+            } else {
+                let candidates = self.store.symbols_by_name(&call.callee)?;
+                if candidates.len() == 1 {
+                    (candidates[0].id, Confidence::Likely)
+                } else {
+                    continue;
+                }
+            };
+            if dst != call.src {
+                self.store.upsert_edge(&Edge {
+                    src_id: call.src,
+                    dst_id: dst,
+                    kind: EdgeKind::Calls,
+                    confidence,
+                    weight: 1.0,
+                })?;
+            }
+        }
+        Ok(())
+    }
+
     /// Рассчитывает ранги и обновляет узлы.
     fn calculate_and_update_ranks(&mut self) -> Result<()> {
-        // Простой ранг на основе количества входящих связей
-        for (path, &file_id) in &self.file_node_ids {
-            let incoming = self.store.incoming_edges(&file_id)?;
-            let rank = incoming.len() as f64 * 0.1;
-            // Обновим ранг файла (требуется обновление узла)
-            // Для простоты пропускаем — ранг будет рассчитан отдельно
-            let _ = path;
-            let _ = rank;
-        }
+        self.store.recompute_ranks()?;
         Ok(())
     }
 }
@@ -357,6 +484,41 @@ fn atlas_hash(content: &str) -> String {
     let mut hasher = DefaultHasher::new();
     content.hash(&mut hasher);
     format!("{:x}", hasher.finish())
+}
+
+/// Имена методов, которые есть у множества типов: связь по такому имени почти всегда ложная.
+fn is_generic_name(name: &str) -> bool {
+    const GENERIC: [&str; 24] = [
+        "new", "default", "from", "into", "clone", "fmt", "drop", "eq", "hash", "len", "get", "set",
+        "push", "pop", "insert", "remove", "next", "iter", "map", "to_string", "as_str", "unwrap",
+        "ok", "is_empty",
+    ];
+    GENERIC.contains(&name)
+}
+
+/// Убирает `.` и `..` из пути, не обращаясь к файловой системе.
+fn normalize_path(path: &Path) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    for comp in path.components() {
+        match comp {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                parts.pop();
+            }
+            other => parts.push(other.as_os_str().to_string_lossy().to_string()),
+        }
+    }
+    parts.join("/")
+}
+
+/// Последний сегмент имени вызова: `self.helper` -> `helper`, `a::b::run` -> `run`.
+fn simple_name(callee: &str) -> String {
+    callee
+        .rsplit(|c: char| c == '.' || c == ':')
+        .next()
+        .unwrap_or(callee)
+        .trim()
+        .to_string()
 }
 
 fn estimate_tokens(text: &str) -> i32 {

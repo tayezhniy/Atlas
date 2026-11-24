@@ -1,5 +1,6 @@
 [package]
 name = "atlas-store"
+version.workspace = true
 description = "Хранилище индекса Atlas: SQLite, миграции, FTS5"
 authors = ["Дмитрий"]
 edition = "2021"

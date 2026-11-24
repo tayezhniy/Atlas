@@ -498,31 +498,31 @@ fn extract_calls_ts_js(node: &tree_sitter::Node, source: &[u8]) -> Result<Vec<Ca
     Ok(calls)
 }
 
+/// Выражение вызова до открывающей скобки аргументов: `obj.method(x.y)` -> `obj.method`.
+fn callee_head(text: &str) -> &str {
+    text.split('(').next().unwrap_or(text).trim().trim_end_matches('!')
+}
+
+fn last_segment<'a>(head: &'a str, separators: &[&str]) -> &'a str {
+    let mut cut = 0;
+    for sep in separators {
+        if let Some(pos) = head.rfind(sep) {
+            cut = cut.max(pos + sep.len());
+        }
+    }
+    head[cut..].trim()
+}
+
 fn extract_rust_call_callee(text: &str) -> String {
-    let t = text.trim_end_matches(';').trim_end_matches(')').trim();
-    let parts: Vec<&str> = t.split("::").collect();
-    parts
-        .last()
-        .map(|s| s.trim().to_string())
-        .unwrap_or_else(|| t.to_string())
+    last_segment(callee_head(text), &["::", "."]).to_string()
 }
 
 fn extract_python_call_callee(text: &str) -> String {
-    let t = text.trim_end_matches(')').trim();
-    let parts: Vec<&str> = t.split('.').collect();
-    parts
-        .last()
-        .map(|s| s.trim().to_string())
-        .unwrap_or_else(|| t.to_string())
+    last_segment(callee_head(text), &["."]).to_string()
 }
 
 fn extract_ts_call_callee(text: &str) -> String {
-    let t = text.trim_end_matches(';').trim_end_matches(')').trim();
-    let parts: Vec<&str> = t.split('.').collect();
-    parts
-        .last()
-        .map(|s| s.trim().to_string())
-        .unwrap_or_else(|| t.to_string())
+    last_segment(callee_head(text), &["."]).to_string()
 }
 
 #[cfg(test)]
