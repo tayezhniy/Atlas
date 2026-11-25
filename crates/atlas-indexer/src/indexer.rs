@@ -139,7 +139,7 @@ impl<'a> ProjectIndexer<'a> {
                             if caller_id != dst_id {
                                 self.store.upsert_edge(&Edge {
                                     src_id: caller_id,
-                                    dst_id: dst_id,
+                                    dst_id,
                                     kind: EdgeKind::Calls,
                                     confidence: Confidence::Likely,
                                     weight: 1.0,

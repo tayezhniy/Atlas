@@ -1,6 +1,7 @@
 const { app, BrowserWindow, ipcMain } = require('electron')
 const path = require('node:path')
 const { spawn } = require('node:child_process')
+const fs = require('node:fs')
 
 // ---------------------------------------------------------------------------
 // Электрон-оболочка Atlas (замена Tauri).
@@ -54,21 +55,62 @@ app.on('window-all-closed', () => {
 })
 
 // ---------------------------------------------------------------------------
-// MCP-клиент поверх stdio
+// Утилиты
 // ---------------------------------------------------------------------------
 
 function getMcpBinary() {
-  // Бинарник atlas-cli лежит рядом со сборкой или в target/debug.
+  // В продакшн-сборке бинарник лежит рядом с resources/app.asar.unpacked
+  // В dev — в target/release или target/debug
+  const isDev = process.env.VITE_DEV_SERVER_URL !== undefined
+  const baseDir = isDev 
+    ? path.join(__dirname, '..', '..') 
+    : path.join(process.resourcesPath, 'app.asar.unpacked', '..', '..')
+  
   const candidates = [
-    path.join(__dirname, '..', '..', 'target', 'debug', 'atlas-cli'),
-    path.join(__dirname, '..', '..', 'target', 'release', 'atlas-cli'),
-    'atlas-cli', // PATH
+    // Release binary (production)
+    path.join(baseDir, 'target', 'release', 'atlas-cli'),
+    // Debug binary (development)
+    path.join(baseDir, 'target', 'debug', 'atlas-cli'),
+    // Fallback to PATH
+    'atlas-cli',
   ]
-  return candidates
+  
+  // Return first existing binary or the first candidate as fallback
+  for (const candidate of candidates) {
+    if (candidate !== 'atlas-cli' && fs.existsSync(candidate)) {
+      return candidate
+    }
+  }
+  return candidates[0]
 }
 
+function parseMcpResult(result) {
+  // MCP tools/call returns { content: [{ type: 'text', text: '...' }], isError: false }
+  // We need to extract the text content
+  if (!result || !result.content || !Array.isArray(result.content)) {
+    return result
+  }
+  
+  const textContent = result.content
+    .filter(c => c.type === 'text')
+    .map(c => c.text)
+    .join('\n')
+  
+  // Try to parse as JSON for structured responses
+  try {
+    return JSON.parse(textContent)
+  } catch {
+    // Return raw text if not JSON
+    return textContent
+  }
+}
+
+// ---------------------------------------------------------------------------
+// MCP-клиент поверх stdio
+// ---------------------------------------------------------------------------
+
 function spawnMcp(projectPath) {
-  const bin = getMcpBinary()[0] // в dev используется target/debug/atlas-cli
+  const bin = getMcpBinary()
   const proc = spawn(bin, ['mcp', '--project', projectPath], {
     stdio: ['pipe', 'pipe', 'pipe'],
   })
@@ -101,7 +143,6 @@ function spawnMcp(projectPath) {
 
   proc.stderr.on('data', (chunk) => {
     // логи MCP-сервера в консоль main process
-    // eslint-disable-next-line no-console
     console.debug(`[mcp:${projectPath}]`, chunk.toString().trim())
   })
 
@@ -114,7 +155,6 @@ function spawnMcp(projectPath) {
   })
 
   proc.on('error', (err) => {
-    // eslint-disable-next-line no-console
     console.error(`[mcp:${projectPath}] spawn error:`, err.message)
     for (const [, cb] of pending) {
       cb.reject(err)
@@ -158,12 +198,12 @@ function mcpRequest(projectPath, method, params) {
 }
 
 // ---------------------------------------------------------------------------
-// Одноразовые команды CLI (index, doctor)
+// Одноразовые команды CLI (index, doctor, run)
 // ---------------------------------------------------------------------------
 
 function runCli(args, cwd) {
   return new Promise((resolve, reject) => {
-    const bin = getMcpBinary()[0]
+    const bin = getMcpBinary()
     const proc = spawn(bin, args, { stdio: ['pipe', 'pipe', 'pipe'], cwd })
     let out = ''
     let err = ''
@@ -195,15 +235,13 @@ ipcMain.handle('atlas:index-project', async (_event, projectPath) => {
 })
 
 ipcMain.handle('atlas:doctor', async (_event, projectPath) => {
-  // status tool через MCP
   try {
     const result = await mcpRequest(projectPath, 'tools/call', {
       name: 'status',
       arguments: {},
     })
-    return { ok: true, result }
+    return { ok: true, result: parseMcpResult(result) }
   } catch (err) {
-    // fallback: пытаемся через CLI doctor
     const out = await runCli(['doctor', '--project', projectPath], projectPath)
     return { ok: true, output: out }
   }
@@ -214,15 +252,15 @@ ipcMain.handle('atlas:search', async (_event, { projectPath, query, limit }) => 
     name: 'search',
     arguments: { query, limit: limit ?? 20 },
   })
-  return result
+  return parseMcpResult(result)
 })
 
-ipcMain.handle('atlas:overview', async (_event, { projectPath }) => {
+ipcMain.handle('atlas:overview', async (_event, { projectPath, path }) => {
   const result = await mcpRequest(projectPath, 'tools/call', {
     name: 'overview',
-    arguments: {},
+    arguments: { path },
   })
-  return result
+  return parseMcpResult(result)
 })
 
 ipcMain.handle('atlas:outline', async (_event, { projectPath, path: filePath }) => {
@@ -230,15 +268,15 @@ ipcMain.handle('atlas:outline', async (_event, { projectPath, path: filePath }) 
     name: 'outline',
     arguments: { path: filePath },
   })
-  return result
+  return parseMcpResult(result)
 })
 
-ipcMain.handle('atlas:read', async (_event, { projectPath, path: filePath, start_line, end_line }) => {
+ipcMain.handle('atlas:read', async (_event, { projectPath, path: filePath, start_line, end_line, mode }) => {
   const result = await mcpRequest(projectPath, 'tools/call', {
     name: 'read',
-    arguments: { path: filePath, start_line, end_line, mode: 'full' },
+    arguments: { path: filePath, start_line, end_line, mode: mode || 'full' },
   })
-  return result
+  return parseMcpResult(result)
 })
 
 ipcMain.handle('atlas:neighbors', async (_event, { projectPath, target }) => {
@@ -246,7 +284,7 @@ ipcMain.handle('atlas:neighbors', async (_event, { projectPath, target }) => {
     name: 'neighbors',
     arguments: { symbol: target },
   })
-  return result
+  return parseMcpResult(result)
 })
 
 ipcMain.handle('atlas:context-for', async (_event, { projectPath, symbol, path, max_tokens }) => {
@@ -254,7 +292,7 @@ ipcMain.handle('atlas:context-for', async (_event, { projectPath, symbol, path, 
     name: 'context_for',
     arguments: { symbol, path, max_tokens },
   })
-  return result
+  return parseMcpResult(result)
 })
 
 ipcMain.handle('atlas:status', async (_event, projectPath) => {
@@ -262,7 +300,7 @@ ipcMain.handle('atlas:status', async (_event, projectPath) => {
     name: 'status',
     arguments: {},
   })
-  return result
+  return parseMcpResult(result)
 })
 
 ipcMain.handle('atlas:tree', async (_event, { projectPath, path }) => {
@@ -270,7 +308,7 @@ ipcMain.handle('atlas:tree', async (_event, { projectPath, path }) => {
     name: 'overview',
     arguments: { path },
   })
-  return result
+  return parseMcpResult(result)
 })
 
 ipcMain.handle('atlas:call-log', async (_event, { projectPath, options }) => {
@@ -278,27 +316,59 @@ ipcMain.handle('atlas:call-log', async (_event, { projectPath, options }) => {
     name: 'status',
     arguments: {},
   })
-  // status tool возвращает информацию о call_log в текстовом виде
-  return result
+  return parseMcpResult(result)
 })
 
+// Settings stored in SQLite via atlas-cli settings commands
 ipcMain.handle('atlas:settings-get', async (_event, { projectPath, key }) => {
-  const entry = getMcp(projectPath)
-  // Используем прямой запрос к БД через CLI
-  const out = await runCli(['doctor', '--project', projectPath], projectPath)
-  return { ok: true, output: out }
+  try {
+    const out = await runCli(['settings', 'get', '--project', projectPath, key], projectPath)
+    return { ok: true, value: out }
+  } catch (err) {
+    return { ok: false, error: err.message }
+  }
 })
 
 ipcMain.handle('atlas:settings-set', async (_event, { projectPath, key, value }) => {
-  // Настройки хранятся в SQLite, пока заглушка
-  return { ok: true }
+  try {
+    await runCli(['settings', 'set', '--project', projectPath, key, value], projectPath)
+    return { ok: true }
+  } catch (err) {
+    return { ok: false, error: err.message }
+  }
 })
 
 ipcMain.handle('atlas:settings-all', async (_event, projectPath) => {
-  return { ok: true, settings: {} }
+  try {
+    const out = await runCli(['settings', 'all', '--project', projectPath], projectPath)
+    return { ok: true, settings: JSON.parse(out) }
+  } catch (err) {
+    return { ok: true, settings: {} }
+  }
 })
 
 ipcMain.handle('atlas:report', async (_event, { projectPath, options }) => {
-  const out = await runCli(['run', 'echo "Report generation not yet implemented"'], projectPath)
-  return { ok: true, output: out }
+  try {
+    const format = options?.format || 'json'
+    const out = await runCli(['report', '--project', projectPath, '--format', format], projectPath)
+    return { ok: true, report: format === 'json' ? JSON.parse(out) : out }
+  } catch (err) {
+    return { ok: false, error: err.message }
+  }
+})
+
+ipcMain.handle('atlas:close-project', async (_event, projectPath) => {
+  const entry = mcpProcesses.get(projectPath)
+  if (entry) {
+    try {
+      // Send shutdown notification
+      const msg = JSON.stringify({ jsonrpc: '2.0', method: 'shutdown' }) + '\n'
+      entry.proc.stdin.write(msg)
+      entry.proc.stdin.write(JSON.stringify({ jsonrpc: '2.0', method: 'exit' }) + '\n')
+      entry.proc.stdin.end()
+      entry.proc.kill('SIGTERM')
+    } catch (_) {}
+    mcpProcesses.delete(projectPath)
+  }
+  return { ok: true }
 })

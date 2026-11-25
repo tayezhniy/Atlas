@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Создание большого проекта (~1500 файлов) для бенчмарка - детерминированная версия"""
+"""Создание большого проекта (~5000+ файлов) для бенчмарка - детерминированная версия"""
 
 import os
 import random
@@ -100,15 +100,15 @@ extensions = {"python": ".py", "typescript": ".ts", "rust": ".rs"}
 
 # Создаём структуру
 domain_langs = {}
+FILES_PER_DOMAIN = 70  # 75 domains * 70 = 5250 files
 for domain, lang in domains:
     domain_langs[domain] = lang
     ext = extensions[lang]
     domain_path = os.path.join(root, "src", domain)
     os.makedirs(domain_path, exist_ok=True)
     
-    # 5 файлов на домен = 75 * 5 = 375 файлов
-    # Добавим ещё файлы в поддиректориях для достижения ~1500
-    for i in range(5):
+    # 70 файлов на домен = 75 * 70 = 5250 файлов
+    for i in range(FILES_PER_DOMAIN):
         fname = f"{domain}_{i}{ext}"
         fpath = os.path.join(domain_path, fname)
         
@@ -353,7 +353,7 @@ with open(os.path.join(root, "README.md"), "w") as f:
     f.write(f"""
 # Large Multi-Language Project
 
-Тестовый проект для бенчмарка Atlas (~{{len(domains) * 5}} файлов).
+Тестовый проект для бенчмарка Atlas (~{{len(domains) * FILES_PER_DOMAIN}} файлов).
 
 ## Домены ({len(domains)})
 
@@ -374,4 +374,4 @@ with open(os.path.join(root, "README.md"), "w") as f:
 5. Статус индекса
 """)
 
-print(f"Created large_multi project at {root} with {len(domains)} domains x 5 files = {len(domains) * 5} files")
+print(f"Created large_multi project at {root} with {len(domains)} domains x {FILES_PER_DOMAIN} files = {len(domains) * FILES_PER_DOMAIN} files")

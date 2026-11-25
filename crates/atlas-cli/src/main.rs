@@ -49,6 +49,48 @@ enum Commands {
         #[arg(long, value_name = "PROJECT_PATH")]
         project: Option<String>,
     },
+    /// Управление настройками проекта
+    Settings {
+        #[command(subcommand)]
+        command: SettingsCommand,
+    },
+    /// Экспорт отчёта проекта
+    Report {
+        /// Корень проекта (по умолчанию текущий каталог)
+        #[arg(long, value_name = "PROJECT_PATH")]
+        project: Option<String>,
+        /// Формат: json или markdown
+        #[arg(long, default_value = "json")]
+        format: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum SettingsCommand {
+    /// Получить значение настройки
+    Get {
+        /// Ключ настройки
+        key: String,
+        /// Корень проекта (по умолчанию текущий каталог)
+        #[arg(long, value_name = "PROJECT_PATH")]
+        project: Option<String>,
+    },
+    /// Установить значение настройки
+    Set {
+        /// Ключ настройки
+        key: String,
+        /// Значение (JSON)
+        value: String,
+        /// Корень проекта (по умолчанию текущий каталог)
+        #[arg(long, value_name = "PROJECT_PATH")]
+        project: Option<String>,
+    },
+    /// Получить все настройки
+    All {
+        /// Корень проекта (по умолчанию текущий каталог)
+        #[arg(long, value_name = "PROJECT_PATH")]
+        project: Option<String>,
+    },
 }
 
 fn main() -> Result<()> {
@@ -108,6 +150,39 @@ fn main() -> Result<()> {
             if failed {
                 std::process::exit(1);
             }
+        }
+        Commands::Settings { command } => {
+            let (project, key, value) = match command {
+                SettingsCommand::Get { key, project } => (project, Some(key), None),
+                SettingsCommand::Set { key, value, project } => (project, Some(key), Some(value)),
+                SettingsCommand::All { project } => (project, None, None),
+            };
+            let root = project_root(project.as_deref())?;
+            let store = open_store(&root)?;
+            if let Some(key) = key {
+                if let Some(value) = value {
+                    store.set_setting(&key, &value)?;
+                    println!("OK");
+                } else {
+                    let value = store.get_setting(&key)?;
+                    println!("{}", value.unwrap_or_default());
+                }
+            } else {
+                let settings = store.all_settings()?;
+                let json = serde_json::to_string_pretty(&settings)?;
+                println!("{}", json);
+            }
+        }
+        Commands::Report { project, format } => {
+            let root = project_root(project.as_deref())?;
+            let store = open_store(&root)?;
+            let output = if format == "markdown" || format == "md" {
+                atlas_core::report::render_markdown(&store, &root.to_string_lossy())?
+            } else {
+                let report = atlas_core::report::generate_report(&store, &root.to_string_lossy())?;
+                serde_json::to_string_pretty(&report)?
+            };
+            println!("{}", output);
         }
     }
 

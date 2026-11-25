@@ -35,6 +35,7 @@ impl ReportGenerator {
         Self { options }
     }
 
+    /// Генерирует отчёт в Markdown (public API для CLI).
     pub fn generate(&self, store: &Store) -> anyhow::Result<String> {
         let root = std::path::Path::new(&self.options.project_root);
         let name = root
@@ -442,4 +443,19 @@ mod tests {
         assert!(!cycles.is_empty());
         assert!(cycles[0].contains(&"a".to_string()));
     }
+}
+
+/// Публичный API для CLI: генерация отчёта в Markdown.
+pub fn generate_report(store: &Store, project_root: &str) -> anyhow::Result<String> {
+    let options = ReportOptions {
+        project_root: project_root.to_string(),
+        ..Default::default()
+    };
+    ReportGenerator::new(options).generate(store)
+}
+
+/// Публичный API для CLI: рендеринг Markdown (уже делается внутри generate_report,
+/// но экспортируется для тестов/других форматов).
+pub fn render_markdown(store: &Store, project_root: &str) -> anyhow::Result<String> {
+    generate_report(store, project_root)
 }

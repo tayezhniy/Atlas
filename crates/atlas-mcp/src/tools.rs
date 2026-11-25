@@ -35,35 +35,99 @@ fn is_closed_path(path: &str) -> bool {
 }
 
 /// Маскирует значения, похожие на ключи и токены (раздел 10.1, п.5 ТЗ).
+/// Не маскирует параметры функций (например pub fn connect(password: &str)).
 fn mask_secrets(line: &str) -> String {
-    let lower = line.to_lowercase();
-    let keyword = [
+    let trimmed = line.trim();
+    let lower = trimmed.to_lowercase();
+
+    // Проверяем, является ли строка объявлением функции/метода/подписью.
+    // В этом случае не маскируем параметры.
+    // Ищем паттерны: fn name(, def name(, function name(, pub fn name(, async fn name(
+    // Исключаем: const NAME: Type = ... (Rust константы), let x: Type = ... (переменные)
+    let is_function_decl = {
+        let mut is_fn = false;
+        // Rust: fn name(, pub fn name(, async fn name(
+        for kw in ["fn ", "pub fn", "async fn"] {
+            for (i, _) in trimmed.match_indices(kw) {
+                let after = &trimmed[i + kw.len()..];
+                if after.chars().next().is_some_and(|c| c.is_alphabetic() || c == '_')
+                    && after.contains('(')
+                {
+                    is_fn = true;
+                }
+            }
+        }
+        // Python: def name(
+        for (i, _) in trimmed.match_indices("def ") {
+            let after = &trimmed[i + 4..];
+            if after.chars().next().is_some_and(|c| c.is_alphabetic() || c == '_')
+                && after.contains('(')
+            {
+                is_fn = true;
+            }
+        }
+        // JS/TS: function name(, const name = (...) =>
+        for (i, _) in trimmed.match_indices("function ") {
+            let after = &trimmed[i + 9..];
+            if after.chars().next().is_some_and(|c| c.is_alphabetic() || c == '_')
+                && after.contains('(')
+            {
+                is_fn = true;
+            }
+        }
+        if trimmed.contains("=>") {
+            is_fn = true;
+        }
+        is_fn
+    };
+
+    // Ключевые слова для секретов (только для присваиваний, не для параметров функций)
+    let secret_keywords = [
         "api_key", "apikey", "api-key", "secret", "password", "passwd", "access_token",
-        "auth_token", "private_key", "authorization", "bearer",
-    ]
-    .iter()
-    .any(|k| lower.contains(k));
-    let separator = || line.find('=').or_else(|| line.find(':'));
-    if keyword {
+        "auth_token", "private_key", "authorization", "bearer", "token", "apisecret", "api_secret",
+    ];
+
+    // Ищем присваивание или присваивание в конфиге: key = value или key: value
+    // но не параметры функций
+    let separator = || {
+        if is_function_decl {
+            None
+        } else {
+            trimmed.find('=').or_else(|| trimmed.find(':'))
+        }
+    };
+
+    // Проверяем наличие секретного ключевого слова
+    let has_secret_keyword = secret_keywords.iter().any(|k| lower.contains(k));
+
+    if has_secret_keyword {
         if let Some(pos) = separator() {
-            let (head, tail) = line.split_at(pos + 1);
+            let (head, tail) = trimmed.split_at(pos + 1);
             let value = tail.trim();
-            if value.len() >= 4 {
-                return format!("{head} ***");
+            // Не маскируем если значение - это просто переменная/передача (password, token без значения)
+            if value.len() >= 4 && !value.starts_with('$') && !value.starts_with('{') {
+                // Дополнительная проверка: не маскируем если это похоже на параметр функции
+                if !head.trim_end().ends_with('(') && !head.contains("->") {
+                    return format!("{head} ***");
+                }
             }
         }
     }
+
     // Известные форматы токенов маскируем даже без ключевого слова
-    let mut out = line.to_string();
-    for marker in ["sk-", "AKIA", "ghp_", "xoxb-"] {
-        if let Some(pos) = out.find(marker) {
-            let end = out[pos..]
-                .char_indices()
-                .find(|(i, c)| *i > marker.len() && !(c.is_alphanumeric() || *c == '-' || *c == '_'))
-                .map(|(i, _)| pos + i)
-                .unwrap_or(out.len());
-            if end.saturating_sub(pos) >= marker.len() + 6 {
-                out.replace_range(pos..end, "***");
+    // но только если это не в объявлении функции
+    let mut out = trimmed.to_string();
+    if !is_function_decl {
+        for marker in ["sk-", "AKIA", "ghp_", "xoxb-"] {
+            if let Some(pos) = out.find(marker) {
+                let end = out[pos..]
+                    .char_indices()
+                    .find(|(i, c)| *i > marker.len() && !(c.is_alphanumeric() || *c == '-' || *c == '_'))
+                    .map(|(i, _)| pos + i)
+                    .unwrap_or(out.len());
+                if end.saturating_sub(pos) >= marker.len() + 6 {
+                    out.replace_range(pos..end, "***");
+                }
             }
         }
     }
@@ -409,15 +473,18 @@ impl ToolRegistry {
                 lines.push(format!("{}, ~{} ток.", n.lang.as_deref().unwrap_or("?"), n.tokens_est));
                 continue;
             }
+            let sig = n.signature.as_deref().unwrap_or(&n.name);
+            let masked_sig = mask_secrets(sig);
             lines.push(format!(
                 "L{}-{}\t{}\t{}",
                 n.line_start.unwrap_or(0),
                 n.line_end.unwrap_or(0),
                 n.kind,
-                first_line(n.signature.as_deref().unwrap_or(&n.name), 160)
+                first_line(&masked_sig, 160)
             ));
             if let Some(doc) = n.doc_summary.as_deref().filter(|d| !d.is_empty()) {
-                lines.push(format!("    # {}", first_line(doc, 140)));
+                let masked_doc = mask_secrets(doc);
+                lines.push(format!("    # {}", first_line(&masked_doc, 140)));
             }
         }
         let (text, shown) = truncate_to_budget(&lines, budget(ctx, &Tool::Outline));

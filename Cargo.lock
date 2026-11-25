@@ -110,6 +110,7 @@ dependencies = [
  "atlas-mcp",
  "atlas-store",
  "clap",
+ "serde_json",
  "tracing",
  "tracing-subscriber",
 ]
