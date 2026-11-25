@@ -75,7 +75,7 @@ declare global {
         query: string
         limit?: number
       }) => Promise<{ query: string; total: number; items: SearchResult[] }>
-      overview: (projectPath: string) => Promise<ProjectOverview>
+      overview: (projectPath: string, path?: string) => Promise<ProjectOverview>
       outline: (args: { projectPath: string; path: string }) => Promise<{
         path: string
         symbols: SymbolNode[]
@@ -85,6 +85,7 @@ declare global {
         path: string
         start_line?: number
         end_line?: number
+        mode?: 'signature' | 'doc' | 'folded' | 'full'
       }) => Promise<{
         path: string
         total: number
@@ -97,6 +98,27 @@ declare global {
         outgoing: EdgeInfo[]
         incoming: EdgeInfo[]
       }>
+      contextFor: (args: {
+        projectPath: string
+        symbol: string
+        path?: string
+        max_tokens?: number
+      }) => Promise<{
+        symbol: { name: string; kind: string; path: string }
+        outgoing: EdgeInfo[]
+        incoming: EdgeInfo[]
+        tests: EdgeInfo[]
+        code: string
+      }>
+      status: (projectPath: string) => Promise<any>
+      tree: (args: { projectPath: string; path?: string }) => Promise<ProjectOverview>
+      callLog: (projectPath: string, options?: any) => Promise<any>
+      settings: {
+        get: (projectPath: string, key: string) => Promise<any>
+        set: (projectPath: string, key: string, value: string) => Promise<any>
+        all: (projectPath: string) => Promise<any>
+      }
+      report: (projectPath: string, options?: any) => Promise<any>
       closeProject: (projectPath: string) => Promise<{ ok: boolean }>
     }
   }

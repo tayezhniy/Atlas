@@ -15,3 +15,9 @@ impl ResponseFormatter {
         format!("{} = {}", alias, path)
     }
 }
+
+impl Default for ResponseFormatter {
+    fn default() -> Self {
+        Self::new()
+    }
+}

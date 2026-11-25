@@ -3,7 +3,8 @@ name = "atlas-mcp"
 version.workspace = true
 description = "MCP-сервер Atlas: протокол, инструменты, бюджеты, форматирование ответов, журнал"
 authors = ["Дмитрий"]
-edition = "2021"
+edition.workspace = true
+rust-version.workspace = true
 
 [dependencies]
 atlas-store = { path = "../atlas-store" }

@@ -147,3 +147,34 @@ fn incoming_edges_survive_when_target_file_changes() {
     assert!(e.iter().all(|x| x.1 != "main"), "{e:?}");
     assert!(e.contains(&("b.py".into(), "a.py".into(), "imports".into(), "certain".into())), "{e:?}");
 }
+
+#[test]
+fn ambiguous_call_names_link_all_candidates_as_guess() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().to_string_lossy().to_string();
+    write(dir.path(), "a.py", "def run():\n    return 1\n");
+    write(dir.path(), "b.py", "def run():\n    return 2\n");
+    // Вызов без импорта: имя `run` неоднозначно, но кандидатов немного
+    write(dir.path(), "c.py", "def go():\n    return run()\n");
+    let mut store = Store::open(dir.path().join(".atlas-test.db")).unwrap();
+    let stats = index(&mut store, &root);
+
+    let e = edges(&store);
+    let guesses: Vec<&(String, String, String, String)> = e
+        .iter()
+        .filter(|x| x.2 == "calls" && x.3 == "guess")
+        .collect();
+    assert_eq!(guesses.len(), 2, "ожидались две связи guess: {e:?}");
+    assert!(guesses.iter().any(|x| x.1 == "run"), "{e:?}");
+    assert!(stats.calls_guessed >= 2, "{stats:?}");
+    assert_eq!(stats.calls_unresolved, 0, "кандидатов мало, связи должны появиться: {stats:?}");
+}
+
+#[test]
+fn call_stats_report_linked_and_unresolved() {
+    let (dir, root) = project();
+    let mut store = Store::open(dir.path().join(".atlas-test.db")).unwrap();
+    let stats = index(&mut store, &root);
+    assert_eq!(stats.calls_linked + stats.calls_unresolved, stats.calls_extracted, "{stats:?}");
+    assert!(stats.calls_linked > 0, "{stats:?}");
+}

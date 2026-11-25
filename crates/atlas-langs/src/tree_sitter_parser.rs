@@ -25,7 +25,23 @@ impl TreeSitterParser {
             "rs" => Some("rust"),
             "py" => Some("python"),
             "ts" | "tsx" => Some("typescript"),
-            "js" | "jsx" => Some("typescript"), // tree-sitter-typescript парсит и JS, и TS
+            "js" | "jsx" => Some("typescript"),
+            "go" => Some("go"),
+            "java" => Some("java"),
+            "cs" => Some("c_sharp"),
+            "c" | "h" => Some("c"),
+            "cpp" | "cc" | "cxx" | "hpp" | "hh" | "hxx" => Some("cpp"),
+            "dart" => Some("dart"),
+            "swift" => Some("swift"),
+            "kt" | "kts" => Some("kotlin"),
+            "lua" => Some("lua"),
+            "zig" => Some("zig"),
+            "ex" | "exs" => Some("elixir"),
+            "hs" => Some("haskell"),
+            "ml" | "mli" => Some("ocaml"),
+            "prisma" => Some("prisma"),
+            "graphql" | "gql" => Some("graphql"),
+            "sql" => Some("sql"),
             _ => None,
         }
     }
@@ -33,9 +49,25 @@ impl TreeSitterParser {
     /// Устанавливает язык парсера по имени.
     fn set_language(&mut self, lang_name: &str) -> Result<()> {
         let lang = match lang_name {
-            "rust" => tree_sitter_rust::language(),
-            "python" => tree_sitter_python::language(),
-            "typescript" => tree_sitter_typescript::language_typescript(),
+            "rust" => tree_sitter_rust::LANGUAGE.into(),
+            "python" => tree_sitter_python::LANGUAGE.into(),
+            "typescript" => tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
+            "go" => tree_sitter_go::LANGUAGE.into(),
+            "java" => tree_sitter_java::LANGUAGE.into(),
+            "c_sharp" => tree_sitter_c_sharp::LANGUAGE.into(),
+            "c" => tree_sitter_c::LANGUAGE.into(),
+            "cpp" => tree_sitter_cpp::LANGUAGE.into(),
+            "dart" => tree_sitter_dart::LANGUAGE.into(),
+            "swift" => tree_sitter_swift::LANGUAGE.into(),
+            "kotlin" => tree_sitter_kt::LANGUAGE.into(),
+            "lua" => tree_sitter_lua::LANGUAGE.into(),
+            "zig" => tree_sitter_zig::LANGUAGE.into(),
+            "elixir" => tree_sitter_elixir::LANGUAGE.into(),
+            "haskell" => tree_sitter_haskell::LANGUAGE.into(),
+            "ocaml" => tree_sitter_ocaml::LANGUAGE_OCAML.into(),
+            "prisma" => tree_sitter_prisma::LANGUAGE.into(),
+            "graphql" => tree_sitter_graphql::LANGUAGE.into(),
+            "sql" => tree_sitter_snowflake::LANGUAGE.into(),
             other => anyhow::bail!("unsupported language: {}", other),
         };
         self.parser
@@ -109,6 +141,21 @@ fn extract_symbols(
         "rust" => extract_symbols_rust(node, source),
         "python" => extract_symbols_python(node, source),
         "typescript" => extract_symbols_ts_js(node, source),
+        "go" => extract_symbols_go(node, source),
+        "java" => extract_symbols_java(node, source),
+        "c_sharp" => extract_symbols_csharp(node, source),
+        "c" | "cpp" => extract_symbols_c_cpp(node, source, lang),
+        "dart" => extract_symbols_dart(node, source),
+        "swift" => extract_symbols_swift(node, source),
+        "kotlin" => extract_symbols_kotlin(node, source),
+        "lua" => extract_symbols_lua(node, source),
+        "zig" => extract_symbols_zig(node, source),
+        "elixir" => extract_symbols_elixir(node, source),
+        "haskell" => extract_symbols_haskell(node, source),
+        "ocaml" => extract_symbols_ocaml(node, source),
+        "prisma" => extract_symbols_prisma(node, source),
+        "graphql" => extract_symbols_graphql(node, source),
+        "sql" => extract_symbols_sql(node, source),
         _ => Ok(vec![]),
     }
 }
@@ -167,6 +214,356 @@ fn extract_symbols_ts_js(node: &tree_sitter::Node, source: &[u8]) -> Result<Vec<
         ],
         &mut symbols,
         "typescript",
+    )?;
+    Ok(symbols)
+}
+
+fn extract_symbols_go(node: &tree_sitter::Node, source: &[u8]) -> Result<Vec<Symbol>> {
+    let mut symbols = Vec::new();
+    // Functions and methods
+    collect_symbols_by_type(
+        node,
+        source,
+        &["function_declaration", "method_declaration"],
+        &mut symbols,
+        "go",
+    )?;
+    // Type declarations (structs, interfaces, type aliases)
+    collect_go_type_declarations(node, source, &mut symbols)?;
+    // Constants and variables
+    collect_symbols_by_type(
+        node,
+        source,
+        &["const_declaration", "var_declaration"],
+        &mut symbols,
+        "go",
+    )?;
+    Ok(symbols)
+}
+
+/// Собирает type_declaration, но только для struct/interface типов.
+fn collect_go_type_declarations(
+    node: &tree_sitter::Node,
+    source: &[u8],
+    out: &mut Vec<Symbol>,
+) -> Result<()> {
+    if node.kind() == "type_declaration" {
+        // Check if it's a struct or interface type
+        for i in 0..node.named_child_count() {
+            if let Some(spec) = node.named_child(i) {
+                if spec.kind() == "type_spec" {
+                    // Look for type_identifier (name) and struct_type/interface_type
+                    let mut name = None;
+                    let mut is_struct_or_interface = false;
+                    for j in 0..spec.named_child_count() {
+                        if let Some(child) = spec.named_child(j) {
+                            if child.kind() == "type_identifier" {
+                                name = node_text(&child, source);
+                            } else if matches!(child.kind(), "struct_type" | "interface_type") {
+                                is_struct_or_interface = true;
+                            }
+                        }
+                    }
+                    if let Some(name) = name.filter(|n| !n.is_empty()) {
+                        if is_struct_or_interface {
+                            let range = spec.range();
+                            out.push(Symbol {
+                                name,
+                                kind: SymbolKind::Class, // struct/interface -> Class
+                                line_start: range.start_point.row + 1,
+                                line_end: range.end_point.row + 1,
+                                signature: extract_signature(&spec, source),
+                                doc: extract_doc_comment(&spec, source),
+                                visibility: extract_visibility(&spec, source, "go"),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+    for_each_child(node, |child| {
+        let _ = collect_go_type_declarations(&child, source, out);
+    });
+    Ok(())
+}
+
+fn extract_symbols_java(node: &tree_sitter::Node, source: &[u8]) -> Result<Vec<Symbol>> {
+    let mut symbols = Vec::new();
+    collect_symbols_by_type(
+        node,
+        source,
+        &[
+            "class_declaration",
+            "interface_declaration",
+            "enum_declaration",
+            "method_declaration",
+            "constructor_declaration",
+            "field_declaration",
+            "constant_declaration",
+        ],
+        &mut symbols,
+        "java",
+    )?;
+    Ok(symbols)
+}
+
+fn extract_symbols_csharp(node: &tree_sitter::Node, source: &[u8]) -> Result<Vec<Symbol>> {
+    let mut symbols = Vec::new();
+    collect_symbols_by_type(
+        node,
+        source,
+        &[
+            "class_declaration",
+            "interface_declaration",
+            "struct_declaration",
+            "enum_declaration",
+            "method_declaration",
+            "constructor_declaration",
+            "property_declaration",
+            "field_declaration",
+            "delegate_declaration",
+        ],
+        &mut symbols,
+        "c_sharp",
+    )?;
+    Ok(symbols)
+}
+
+// ===== Новые языки =====
+
+fn extract_symbols_c_cpp(node: &tree_sitter::Node, source: &[u8], lang: &str) -> Result<Vec<Symbol>> {
+    let mut symbols = Vec::new();
+    let types = if lang == "c" {
+        &[
+            "function_definition",
+            "struct_specifier",
+            "union_specifier",
+            "enum_specifier",
+            "type_definition",
+            "declaration",
+        ] as &[&str]
+    } else {
+        &[
+            "function_definition",
+            "class_specifier",
+            "struct_specifier",
+            "union_specifier",
+            "enum_specifier",
+            "type_definition",
+            "declaration",
+            "template_declaration",
+            "namespace_definition",
+        ] as &[&str]
+    };
+    collect_symbols_by_type(node, source, types, &mut symbols, lang)?;
+    Ok(symbols)
+}
+
+fn extract_symbols_dart(node: &tree_sitter::Node, source: &[u8]) -> Result<Vec<Symbol>> {
+    let mut symbols = Vec::new();
+    collect_symbols_by_type(
+        node,
+        source,
+        &[
+            "function_declaration",
+            "method_declaration",
+            "class_declaration",
+            "enum_declaration",
+            "mixin_declaration",
+            "extension_declaration",
+            "type_alias_declaration",
+            "top_level_variable_declaration",
+        ],
+        &mut symbols,
+        "dart",
+    )?;
+    Ok(symbols)
+}
+
+fn extract_symbols_swift(node: &tree_sitter::Node, source: &[u8]) -> Result<Vec<Symbol>> {
+    let mut symbols = Vec::new();
+    collect_symbols_by_type(
+        node,
+        source,
+        &[
+            "function_declaration",
+            "method_declaration",
+            "class_declaration",
+            "struct_declaration",
+            "enum_declaration",
+            "protocol_declaration",
+            "extension_declaration",
+            "typealias_declaration",
+            "variable_declaration",
+        ],
+        &mut symbols,
+        "swift",
+    )?;
+    Ok(symbols)
+}
+
+fn extract_symbols_kotlin(node: &tree_sitter::Node, source: &[u8]) -> Result<Vec<Symbol>> {
+    let mut symbols = Vec::new();
+    collect_symbols_by_type(
+        node,
+        source,
+        &[
+            "function_declaration",
+            "class_declaration",
+            "interface_declaration",
+            "object_declaration",
+            "enum_declaration",
+            "data_class_declaration",
+            "type_alias",
+            "property_declaration",
+        ],
+        &mut symbols,
+        "kotlin",
+    )?;
+    Ok(symbols)
+}
+
+fn extract_symbols_lua(node: &tree_sitter::Node, source: &[u8]) -> Result<Vec<Symbol>> {
+    let mut symbols = Vec::new();
+    collect_symbols_by_type(
+        node,
+        source,
+        &[
+            "function_declaration",
+            "local_function",
+            "function_definition",
+            "table_constructor",
+        ],
+        &mut symbols,
+        "lua",
+    )?;
+    Ok(symbols)
+}
+
+fn extract_symbols_zig(node: &tree_sitter::Node, source: &[u8]) -> Result<Vec<Symbol>> {
+    let mut symbols = Vec::new();
+    collect_symbols_by_type(
+        node,
+        source,
+        &[
+            "function_declaration",
+            "struct_declaration",
+            "union_declaration",
+            "enum_declaration",
+            "const_declaration",
+            "var_declaration",
+        ],
+        &mut symbols,
+        "zig",
+    )?;
+    Ok(symbols)
+}
+
+fn extract_symbols_elixir(node: &tree_sitter::Node, source: &[u8]) -> Result<Vec<Symbol>> {
+    let mut symbols = Vec::new();
+    collect_symbols_by_type(
+        node,
+        source,
+        &[
+            "function_declaration",
+            "module_declaration",
+            "macro_declaration",
+            "struct_declaration",
+            "protocol_declaration",
+        ],
+        &mut symbols,
+        "elixir",
+    )?;
+    Ok(symbols)
+}
+
+fn extract_symbols_haskell(node: &tree_sitter::Node, source: &[u8]) -> Result<Vec<Symbol>> {
+    let mut symbols = Vec::new();
+    collect_symbols_by_type(
+        node,
+        source,
+        &[
+            "function_declaration",
+            "data_declaration",
+            "type_declaration",
+            "class_declaration",
+            "instance_declaration",
+            "newtype_declaration",
+        ],
+        &mut symbols,
+        "haskell",
+    )?;
+    Ok(symbols)
+}
+
+fn extract_symbols_ocaml(node: &tree_sitter::Node, source: &[u8]) -> Result<Vec<Symbol>> {
+    let mut symbols = Vec::new();
+    collect_symbols_by_type(
+        node,
+        source,
+        &[
+            "let_binding",
+            "function_declaration",
+            "type_declaration",
+            "module_declaration",
+            "class_declaration",
+        ],
+        &mut symbols,
+        "ocaml",
+    )?;
+    Ok(symbols)
+}
+
+fn extract_symbols_prisma(node: &tree_sitter::Node, source: &[u8]) -> Result<Vec<Symbol>> {
+    let mut symbols = Vec::new();
+    collect_symbols_by_type(
+        node,
+        source,
+        &[
+            "model_declaration",
+            "enum_declaration",
+            "type_declaration",
+        ],
+        &mut symbols,
+        "prisma",
+    )?;
+    Ok(symbols)
+}
+
+fn extract_symbols_graphql(node: &tree_sitter::Node, source: &[u8]) -> Result<Vec<Symbol>> {
+    let mut symbols = Vec::new();
+    collect_symbols_by_type(
+        node,
+        source,
+        &[
+            "object_type_definition",
+            "interface_type_definition",
+            "enum_type_definition",
+            "input_type_definition",
+            "field_definition",
+            "directive_definition",
+        ],
+        &mut symbols,
+        "graphql",
+    )?;
+    Ok(symbols)
+}
+
+fn extract_symbols_sql(node: &tree_sitter::Node, source: &[u8]) -> Result<Vec<Symbol>> {
+    let mut symbols = Vec::new();
+    collect_symbols_by_type(
+        node,
+        source,
+        &[
+            "create_table_statement",
+            "create_view_statement",
+            "create_function_statement",
+            "create_procedure_statement",
+            "function_definition",
+        ],
+        &mut symbols,
+        "sql",
     )?;
     Ok(symbols)
 }
@@ -232,18 +629,6 @@ fn extract_name(node: &tree_sitter::Node, source: &[u8], _lang: &str) -> Option<
                         return Some(text);
                     }
                 }
-            }
-        }
-    }
-    None
-}
-
-/// Находит первого named child с заданным типом.
-fn find_child_by_kind<'a>(node: &'a tree_sitter::Node, kind: &str) -> Option<tree_sitter::Node<'a>> {
-    for i in 0..node.named_child_count() {
-        if let Some(child) = node.named_child(i) {
-            if child.kind() == kind {
-                return Some(child);
             }
         }
     }
@@ -431,6 +816,120 @@ fn extract_visibility(node: &tree_sitter::Node, source: &[u8], lang: &str) -> Vi
                 Visibility::Public
             }
         }
+        "go" => {
+            let name = extract_name(node, source, lang).unwrap_or_default();
+            if name[..1].to_uppercase() == name[..1] {
+                Visibility::Public
+            } else {
+                Visibility::Private
+            }
+        }
+        "java" => {
+            let t = first_line.trim_start();
+            if t.contains(" private ") || t.starts_with("private ") {
+                Visibility::Private
+            } else if t.contains(" protected ") || t.starts_with("protected ") {
+                Visibility::Protected
+            } else if t.contains(" public ") || t.starts_with("public ") {
+                Visibility::Public
+            } else {
+                Visibility::Package
+            }
+        }
+        "c_sharp" => {
+            let t = first_line.trim_start();
+            if t.contains(" private ") || t.starts_with("private ") {
+                Visibility::Private
+            } else if t.contains(" protected ") || t.starts_with("protected ") {
+                Visibility::Protected
+            } else if t.contains(" public ") || t.starts_with("public ") {
+                Visibility::Public
+            } else if t.contains(" internal ") || t.starts_with("internal ") {
+                Visibility::Package
+            } else {
+                Visibility::Private
+            }
+        }
+        "c" | "cpp" => {
+            // C/C++: no explicit visibility in function/class definition
+            // Could check for static (file-local) or in header vs source
+            Visibility::Public
+        }
+        "dart" => {
+            let name = extract_name(node, source, lang).unwrap_or_default();
+            if name.starts_with('_') {
+                Visibility::Private
+            } else {
+                Visibility::Public
+            }
+        }
+        "swift" => {
+            let t = first_line.trim_start();
+            if t.contains(" private ") || t.starts_with("private ") {
+                Visibility::Private
+            } else if t.contains(" fileprivate ") || t.starts_with("fileprivate ") {
+                Visibility::Package
+            } else if t.contains(" internal ") || t.starts_with("internal ") {
+                Visibility::Package
+            } else if t.contains(" public ") || t.starts_with("public ") {
+                Visibility::Public
+            } else if t.contains(" open ") || t.starts_with("open ") {
+                Visibility::Public
+            } else {
+                Visibility::Package // default is internal
+            }
+        }
+        "kotlin" => {
+            let t = first_line.trim_start();
+            if t.contains(" private ") || t.starts_with("private ") {
+                Visibility::Private
+            } else if t.contains(" protected ") || t.starts_with("protected ") {
+                Visibility::Protected
+            } else if t.contains(" internal ") || t.starts_with("internal ") {
+                Visibility::Package
+            } else if t.contains(" public ") || t.starts_with("public ") {
+                Visibility::Public
+            } else {
+                Visibility::Public // default is public
+            }
+        }
+        "lua" => {
+            // Lua: local = private, global = public
+            if first_line.contains("local ") {
+                Visibility::Private
+            } else {
+                Visibility::Public
+            }
+        }
+        "zig" => {
+            // Zig: pub = public, default = private
+            if first_line.contains("pub ") {
+                Visibility::Public
+            } else {
+                Visibility::Private
+            }
+        }
+        "elixir" => {
+            // Elixir: defp = private, def = public
+            if first_line.contains("defp ") {
+                Visibility::Private
+            } else if first_line.contains("def ") {
+                Visibility::Public
+            } else {
+                Visibility::Package
+            }
+        }
+        "haskell" => {
+            // Haskell: no explicit visibility, but module exports control it
+            Visibility::Public
+        }
+        "ocaml" => {
+            // OCaml: no explicit visibility in signature
+            Visibility::Public
+        }
+        "prisma" => Visibility::Public,
+        "graphql" => Visibility::Public,
+        "sql" => Visibility::Public,
         _ => Visibility::Unknown,
     }
 }
@@ -438,18 +937,54 @@ fn extract_visibility(node: &tree_sitter::Node, source: &[u8], lang: &str) -> Vi
 /// Маппинг типа узла tree-sitter в SymbolKind.
 fn map_kind(kind: &str, _lang: &str) -> SymbolKind {
     match kind {
+        // Functions
         "function_item" | "function_definition" | "function_declaration"
-        | "async_function_definition" | "arrow_function" | "function_expression" => {
-            SymbolKind::Function
-        }
-        "struct_item" | "class_definition" | "class_declaration" => SymbolKind::Class,
-        "interface_declaration" => SymbolKind::Interface,
-        "enum_item" => SymbolKind::Type,
-        "trait_item" => SymbolKind::Interface,
-        "impl_item" => SymbolKind::Class,
-        "const_item" | "lexical_declaration" | "variable_declarator" => SymbolKind::Constant,
-        "type_item" => SymbolKind::Type,
-        "method_definition" => SymbolKind::Method,
+        | "async_function_definition" | "arrow_function" | "function_expression"
+        | "constructor_declaration" | "method_declaration" | "function_method_declaration"
+        | "function_signature" | "local_function" => SymbolKind::Function,
+        
+        // Classes/Structs
+        "struct_item" | "class_definition" | "class_declaration" 
+        | "struct_declaration" | "impl_item" | "class_specifier"
+        | "struct_specifier" | "object_declaration" | "data_class_declaration"
+        | "mixin_declaration" | "extension_declaration" | "protocol_declaration"
+        | "module_declaration" => SymbolKind::Class,
+        
+        // Interfaces
+        "interface_declaration" | "trait_item" | "interface_type_definition" => SymbolKind::Interface,
+        
+        // Enums/Types
+        "enum_item" | "type_item" | "enum_declaration" | "type_declaration"
+        | "enum_specifier" | "union_specifier" | "union_declaration"
+        | "type_alias_declaration" | "typealias_declaration" | "type_alias"
+        | "newtype_declaration" | "data_declaration" => SymbolKind::Type,
+        
+        // Methods
+        "method_definition" | "method_invocation" => SymbolKind::Method,
+        
+        // Constants/Fields
+        "const_item" | "lexical_declaration" | "variable_declarator" 
+        | "const_declaration" | "field_declaration" | "constant_declaration" 
+        | "property_declaration" | "var_declaration" | "const_spec"
+        | "top_level_variable_declaration" | "let_binding" => SymbolKind::Constant,
+        
+        // C# specific
+        "delegate_declaration" => SymbolKind::Type,
+        
+        // GraphQL specific
+        "object_type_definition" => SymbolKind::Class,
+        "field_definition" => SymbolKind::Field,
+        "directive_definition" => SymbolKind::Constant,
+        
+        // Prisma specific
+        "model_declaration" => SymbolKind::Class,
+        
+        // SQL specific
+        "create_table_statement" => SymbolKind::Class,
+        "create_view_statement" => SymbolKind::Class,
+        "create_function_statement" => SymbolKind::Function,
+        "create_procedure_statement" => SymbolKind::Function,
+        
         _ => SymbolKind::Function,
     }
 }
@@ -467,6 +1002,21 @@ fn extract_imports(
         "rust" => extract_imports_rust(node, source),
         "python" => extract_imports_python(node, source),
         "typescript" => extract_imports_ts_js(node, source),
+        "go" => extract_imports_go(node, source),
+        "java" => extract_imports_java(node, source),
+        "c_sharp" => extract_imports_csharp(node, source),
+        "c" | "cpp" => extract_imports_c_cpp(node, source),
+        "dart" => extract_imports_dart(node, source),
+        "swift" => extract_imports_swift(node, source),
+        "kotlin" => extract_imports_kotlin(node, source),
+        "lua" => extract_imports_lua(node, source),
+        "zig" => extract_imports_zig(node, source),
+        "elixir" => extract_imports_elixir(node, source),
+        "haskell" => extract_imports_haskell(node, source),
+        "ocaml" => extract_imports_ocaml(node, source),
+        "prisma" => extract_imports_prisma(node, source),
+        "graphql" => extract_imports_graphql(node, source),
+        "sql" => extract_imports_sql(node, source),
         _ => Ok(vec![]),
     }
 }
@@ -523,6 +1073,254 @@ fn extract_imports_ts_js(node: &tree_sitter::Node, source: &[u8]) -> Result<Vec<
             }
         },
     )?;
+    Ok(imports)
+}
+
+fn extract_imports_go(node: &tree_sitter::Node, source: &[u8]) -> Result<Vec<Import>> {
+    let mut imports = Vec::new();
+    collect_nodes_by_type(node, source, &["import_declaration"], &mut |n, src| {
+        let text = node_text(n, src).unwrap_or_default();
+        for target in go_import_targets(&text) {
+            imports.push(Import {
+                from: "self".to_string(),
+                to: target,
+                line: n.range().start_point.row + 1,
+            });
+        }
+    })?;
+    Ok(imports)
+}
+
+fn extract_imports_java(node: &tree_sitter::Node, source: &[u8]) -> Result<Vec<Import>> {
+    let mut imports = Vec::new();
+    collect_nodes_by_type(node, source, &["import_declaration"], &mut |n, src| {
+        let text = node_text(n, src).unwrap_or_default();
+        for target in java_import_targets(&text) {
+            imports.push(Import {
+                from: "self".to_string(),
+                to: target,
+                line: n.range().start_point.row + 1,
+            });
+        }
+    })?;
+    Ok(imports)
+}
+
+fn extract_imports_csharp(node: &tree_sitter::Node, source: &[u8]) -> Result<Vec<Import>> {
+    let mut imports = Vec::new();
+    collect_nodes_by_type(node, source, &["using_directive"], &mut |n, src| {
+        let text = node_text(n, src).unwrap_or_default();
+        if let Some(target) = csharp_using_target(&text) {
+            imports.push(Import {
+                from: "self".to_string(),
+                to: target,
+                line: n.range().start_point.row + 1,
+            });
+        }
+    })?;
+    Ok(imports)
+}
+
+/// `import ( "a" "b" )` or `import "a"` -> ["a", "b"]
+fn go_import_targets(text: &str) -> Vec<String> {
+    let t = text.trim().strip_prefix("import").unwrap_or(text).trim();
+    let t = t.trim().trim_matches(|c: char| c == '(' || c == ')').trim();
+    t.split_whitespace()
+        .filter_map(|s| s.trim_matches('"').to_string().into())
+        .filter(|s: &String| !s.is_empty())
+        .collect()
+}
+
+/// `import java.util.*;` or `import java.util.List;` -> ["java.util.*", "java.util.List"]
+fn java_import_targets(text: &str) -> Vec<String> {
+    let t = text.trim().strip_prefix("import").unwrap_or(text).trim().trim_end_matches(';').trim();
+    if t.starts_with("static ") {
+        return vec![];
+    }
+    vec![t.to_string()]
+}
+
+/// `using System;` or `using System.Collections.Generic;` -> ["System", "System.Collections.Generic"]
+fn csharp_using_target(text: &str) -> Option<String> {
+    let t = text.trim().strip_prefix("using").unwrap_or(text).trim().trim_end_matches(';').trim();
+    if t.starts_with("static ") {
+        return None;
+    }
+    (!t.is_empty()).then_some(t.to_string())
+}
+
+// ===== Новые языки: импорты =====
+
+fn extract_imports_c_cpp(node: &tree_sitter::Node, source: &[u8]) -> Result<Vec<Import>> {
+    let mut imports = Vec::new();
+    collect_nodes_by_type(node, source, &["preproc_include"], &mut |n, src| {
+        let text = node_text(n, src).unwrap_or_default();
+        // #include <stdio.h> or #include "local.h"
+        if let Some(path) = text.split(&['<', '"'][..]).nth(1).and_then(|s| s.split(&['>', '"'][..]).next()) {
+            if !path.is_empty() {
+                imports.push(Import {
+                    from: "self".to_string(),
+                    to: path.to_string(),
+                    line: n.range().start_point.row + 1,
+                });
+            }
+        }
+    })?;
+    Ok(imports)
+}
+
+fn extract_imports_dart(node: &tree_sitter::Node, source: &[u8]) -> Result<Vec<Import>> {
+    let mut imports = Vec::new();
+    collect_nodes_by_type(node, source, &["import_declaration", "export_declaration"], &mut |n, src| {
+        let text = node_text(n, src).unwrap_or_default();
+        // import 'package:foo/bar.dart';
+        if let Some(path) = text.split("'").nth(1).or_else(|| text.split('"').nth(1)) {
+            if !path.is_empty() {
+                imports.push(Import {
+                    from: "self".to_string(),
+                    to: path.to_string(),
+                    line: n.range().start_point.row + 1,
+                });
+            }
+        }
+    })?;
+    Ok(imports)
+}
+
+fn extract_imports_swift(node: &tree_sitter::Node, source: &[u8]) -> Result<Vec<Import>> {
+    let mut imports = Vec::new();
+    collect_nodes_by_type(node, source, &["import_declaration"], &mut |n, src| {
+        let text = node_text(n, src).unwrap_or_default();
+        // import Foundation
+        let parts: Vec<&str> = text.split_whitespace().collect();
+        if parts.len() >= 2 {
+            imports.push(Import {
+                from: "self".to_string(),
+                to: parts[1].to_string(),
+                line: n.range().start_point.row + 1,
+            });
+        }
+    })?;
+    Ok(imports)
+}
+
+fn extract_imports_kotlin(node: &tree_sitter::Node, source: &[u8]) -> Result<Vec<Import>> {
+    let mut imports = Vec::new();
+    collect_nodes_by_type(node, source, &["import_header"], &mut |n, src| {
+        let text = node_text(n, src).unwrap_or_default();
+        // import com.example.Foo
+        let parts: Vec<&str> = text.split_whitespace().collect();
+        if parts.len() >= 2 {
+            imports.push(Import {
+                from: "self".to_string(),
+                to: parts[1].to_string(),
+                line: n.range().start_point.row + 1,
+            });
+        }
+    })?;
+    Ok(imports)
+}
+
+fn extract_imports_lua(node: &tree_sitter::Node, source: &[u8]) -> Result<Vec<Import>> {
+    let mut imports = Vec::new();
+    collect_nodes_by_type(node, source, &["require_call"], &mut |n, src| {
+        let text = node_text(n, src).unwrap_or_default();
+        // require "module" or require("module")
+        if let Some(path) = text.split(&['"', '(', ')'][..]).find(|s| !s.trim().is_empty() && !s.contains("require")) {
+            imports.push(Import {
+                from: "self".to_string(),
+                to: path.trim().to_string(),
+                line: n.range().start_point.row + 1,
+            });
+        }
+    })?;
+    Ok(imports)
+}
+
+fn extract_imports_zig(node: &tree_sitter::Node, source: &[u8]) -> Result<Vec<Import>> {
+    let mut imports = Vec::new();
+    collect_nodes_by_type(node, source, &["import_declaration"], &mut |n, src| {
+        let text = node_text(n, src).unwrap_or_default();
+        // @import("std") or @import("root").xxx
+        if let Some(path) = text.split(&['"', '(', ')'][..]).nth(1) {
+            if !path.is_empty() {
+                imports.push(Import {
+                    from: "self".to_string(),
+                    to: path.to_string(),
+                    line: n.range().start_point.row + 1,
+                });
+            }
+        }
+    })?;
+    Ok(imports)
+}
+
+fn extract_imports_elixir(node: &tree_sitter::Node, source: &[u8]) -> Result<Vec<Import>> {
+    let mut imports = Vec::new();
+    collect_nodes_by_type(node, source, &["alias", "require", "import"], &mut |n, src| {
+        let text = node_text(n, src).unwrap_or_default();
+        let parts: Vec<&str> = text.split_whitespace().collect();
+        if parts.len() >= 2 {
+            imports.push(Import {
+                from: "self".to_string(),
+                to: parts[1].to_string(),
+                line: n.range().start_point.row + 1,
+            });
+        }
+    })?;
+    Ok(imports)
+}
+
+fn extract_imports_haskell(node: &tree_sitter::Node, source: &[u8]) -> Result<Vec<Import>> {
+    let mut imports = Vec::new();
+    collect_nodes_by_type(node, source, &["import_declaration"], &mut |n, src| {
+        let text = node_text(n, src).unwrap_or_default();
+        // import Data.List
+        let parts: Vec<&str> = text.split_whitespace().collect();
+        if parts.len() >= 2 {
+            imports.push(Import {
+                from: "self".to_string(),
+                to: parts[1].to_string(),
+                line: n.range().start_point.row + 1,
+            });
+        }
+    })?;
+    Ok(imports)
+}
+
+fn extract_imports_ocaml(node: &tree_sitter::Node, source: &[u8]) -> Result<Vec<Import>> {
+    let mut imports = Vec::new();
+    collect_nodes_by_type(node, source, &["open_declaration", "include_declaration"], &mut |n, src| {
+        let text = node_text(n, src).unwrap_or_default();
+        // open Module or include Module
+        let parts: Vec<&str> = text.split_whitespace().collect();
+        if parts.len() >= 2 {
+            imports.push(Import {
+                from: "self".to_string(),
+                to: parts[1].to_string(),
+                line: n.range().start_point.row + 1,
+            });
+        }
+    })?;
+    Ok(imports)
+}
+
+fn extract_imports_prisma(_node: &tree_sitter::Node, _source: &[u8]) -> Result<Vec<Import>> {
+    let imports = Vec::new();
+    // Prisma uses generator blocks and datasource, not traditional imports
+    // Could parse generator and datasource blocks
+    Ok(imports)
+}
+
+fn extract_imports_graphql(_node: &tree_sitter::Node, _source: &[u8]) -> Result<Vec<Import>> {
+    let imports = Vec::new();
+    // GraphQL doesn't have traditional imports, but has schema extensions
+    Ok(imports)
+}
+
+fn extract_imports_sql(_node: &tree_sitter::Node, _source: &[u8]) -> Result<Vec<Import>> {
+    let imports = Vec::new();
+    // SQL doesn't have imports in the traditional sense
     Ok(imports)
 }
 
@@ -602,8 +1400,7 @@ fn ts_module_specifier(text: &str) -> Option<String> {
     // Ищем последний строковый литерал в кавычках
     let (start, quote) = t
         .char_indices()
-        .find(|(_, c)| *c == '\'' || *c == '"')
-        .map(|(i, c)| (i, c))?;
+        .find(|(_, c)| *c == '\'' || *c == '"')?;
     let rest = &t[start + quote.len_utf8()..];
     let end = rest.find(quote)?;
     let spec = &rest[..end];
@@ -670,6 +1467,21 @@ fn extract_calls(
         "rust" => extract_calls_rust(node, source),
         "python" => extract_calls_python(node, source),
         "typescript" => extract_calls_ts_js(node, source),
+        "go" => extract_calls_go(node, source),
+        "java" => extract_calls_java(node, source),
+        "c_sharp" => extract_calls_csharp(node, source),
+        "c" | "cpp" => extract_calls_c_cpp(node, source),
+        "dart" => extract_calls_dart(node, source),
+        "swift" => extract_calls_swift(node, source),
+        "kotlin" => extract_calls_kotlin(node, source),
+        "lua" => extract_calls_lua(node, source),
+        "zig" => extract_calls_zig(node, source),
+        "elixir" => extract_calls_elixir(node, source),
+        "haskell" => extract_calls_haskell(node, source),
+        "ocaml" => extract_calls_ocaml(node, source),
+        "prisma" => extract_calls_prisma(node, source),
+        "graphql" => extract_calls_graphql(node, source),
+        "sql" => extract_calls_sql(node, source),
         _ => Ok(vec![]),
     }
 }
@@ -714,6 +1526,252 @@ fn extract_calls_ts_js(node: &tree_sitter::Node, source: &[u8]) -> Result<Vec<Ca
         });
     })?;
     Ok(calls)
+}
+
+fn extract_calls_go(node: &tree_sitter::Node, source: &[u8]) -> Result<Vec<Call>> {
+    let mut calls = Vec::new();
+    collect_nodes_by_type(node, source, &["call_expression"], &mut |n, src| {
+        let text = node_text(n, src).unwrap_or_default();
+        let callee = extract_go_call_callee(&text);
+        calls.push(Call {
+            caller: "unknown".to_string(),
+            callee,
+            line: n.range().start_point.row + 1,
+        });
+    })?;
+    Ok(calls)
+}
+
+fn extract_calls_java(node: &tree_sitter::Node, source: &[u8]) -> Result<Vec<Call>> {
+    let mut calls = Vec::new();
+    collect_nodes_by_type(node, source, &["method_invocation"], &mut |n, src| {
+        let text = node_text(n, src).unwrap_or_default();
+        let callee = extract_java_call_callee(&text);
+        calls.push(Call {
+            caller: "unknown".to_string(),
+            callee,
+            line: n.range().start_point.row + 1,
+        });
+    })?;
+    Ok(calls)
+}
+
+fn extract_calls_csharp(node: &tree_sitter::Node, source: &[u8]) -> Result<Vec<Call>> {
+    let mut calls = Vec::new();
+    collect_nodes_by_type(node, source, &["invocation_expression"], &mut |n, src| {
+        let text = node_text(n, src).unwrap_or_default();
+        let callee = extract_csharp_call_callee(&text);
+        calls.push(Call {
+            caller: "unknown".to_string(),
+            callee,
+            line: n.range().start_point.row + 1,
+        });
+    })?;
+    Ok(calls)
+}
+
+/// Go: `pkg.Func(args)` -> `pkg.Func`
+fn extract_go_call_callee(text: &str) -> String {
+    last_segment(callee_head(text), &["."]).to_string()
+}
+
+/// Java: `obj.method(args)` -> `method`
+fn extract_java_call_callee(text: &str) -> String {
+    last_segment(callee_head(text), &["."]).to_string()
+}
+
+/// C#: `obj.Method(args)` -> `Method`
+fn extract_csharp_call_callee(text: &str) -> String {
+    last_segment(callee_head(text), &["."]).to_string()
+}
+
+// ===== Новые языки: вызовы =====
+
+fn extract_calls_c_cpp(node: &tree_sitter::Node, source: &[u8]) -> Result<Vec<Call>> {
+    let mut calls = Vec::new();
+    collect_nodes_by_type(node, source, &["call_expression"], &mut |n, src| {
+        let text = node_text(n, src).unwrap_or_default();
+        let callee = extract_c_cpp_call_callee(&text);
+        calls.push(Call {
+            caller: "unknown".to_string(),
+            callee,
+            line: n.range().start_point.row + 1,
+        });
+    })?;
+    Ok(calls)
+}
+
+fn extract_calls_dart(node: &tree_sitter::Node, source: &[u8]) -> Result<Vec<Call>> {
+    let mut calls = Vec::new();
+    collect_nodes_by_type(node, source, &["method_invocation", "function_invocation"], &mut |n, src| {
+        let text = node_text(n, src).unwrap_or_default();
+        let callee = extract_dart_call_callee(&text);
+        calls.push(Call {
+            caller: "unknown".to_string(),
+            callee,
+            line: n.range().start_point.row + 1,
+        });
+    })?;
+    Ok(calls)
+}
+
+fn extract_calls_swift(node: &tree_sitter::Node, source: &[u8]) -> Result<Vec<Call>> {
+    let mut calls = Vec::new();
+    collect_nodes_by_type(node, source, &["call_expression", "function_call_expression"], &mut |n, src| {
+        let text = node_text(n, src).unwrap_or_default();
+        let callee = extract_swift_call_callee(&text);
+        calls.push(Call {
+            caller: "unknown".to_string(),
+            callee,
+            line: n.range().start_point.row + 1,
+        });
+    })?;
+    Ok(calls)
+}
+
+fn extract_calls_kotlin(node: &tree_sitter::Node, source: &[u8]) -> Result<Vec<Call>> {
+    let mut calls = Vec::new();
+    collect_nodes_by_type(node, source, &["call_expression"], &mut |n, src| {
+        let text = node_text(n, src).unwrap_or_default();
+        let callee = extract_kotlin_call_callee(&text);
+        calls.push(Call {
+            caller: "unknown".to_string(),
+            callee,
+            line: n.range().start_point.row + 1,
+        });
+    })?;
+    Ok(calls)
+}
+
+fn extract_calls_lua(node: &tree_sitter::Node, source: &[u8]) -> Result<Vec<Call>> {
+    let mut calls = Vec::new();
+    collect_nodes_by_type(node, source, &["function_call"], &mut |n, src| {
+        let text = node_text(n, src).unwrap_or_default();
+        let callee = extract_lua_call_callee(&text);
+        calls.push(Call {
+            caller: "unknown".to_string(),
+            callee,
+            line: n.range().start_point.row + 1,
+        });
+    })?;
+    Ok(calls)
+}
+
+fn extract_calls_zig(node: &tree_sitter::Node, source: &[u8]) -> Result<Vec<Call>> {
+    let mut calls = Vec::new();
+    collect_nodes_by_type(node, source, &["call_expression"], &mut |n, src| {
+        let text = node_text(n, src).unwrap_or_default();
+        let callee = extract_zig_call_callee(&text);
+        calls.push(Call {
+            caller: "unknown".to_string(),
+            callee,
+            line: n.range().start_point.row + 1,
+        });
+    })?;
+    Ok(calls)
+}
+
+fn extract_calls_elixir(node: &tree_sitter::Node, source: &[u8]) -> Result<Vec<Call>> {
+    let mut calls = Vec::new();
+    collect_nodes_by_type(node, source, &["call"], &mut |n, src| {
+        let text = node_text(n, src).unwrap_or_default();
+        let callee = extract_elixir_call_callee(&text);
+        calls.push(Call {
+            caller: "unknown".to_string(),
+            callee,
+            line: n.range().start_point.row + 1,
+        });
+    })?;
+    Ok(calls)
+}
+
+fn extract_calls_haskell(node: &tree_sitter::Node, source: &[u8]) -> Result<Vec<Call>> {
+    let mut calls = Vec::new();
+    collect_nodes_by_type(node, source, &["application"], &mut |n, src| {
+        let text = node_text(n, src).unwrap_or_default();
+        let callee = extract_haskell_call_callee(&text);
+        calls.push(Call {
+            caller: "unknown".to_string(),
+            callee,
+            line: n.range().start_point.row + 1,
+        });
+    })?;
+    Ok(calls)
+}
+
+fn extract_calls_ocaml(node: &tree_sitter::Node, source: &[u8]) -> Result<Vec<Call>> {
+    let mut calls = Vec::new();
+    collect_nodes_by_type(node, source, &["application"], &mut |n, src| {
+        let text = node_text(n, src).unwrap_or_default();
+        let callee = extract_ocaml_call_callee(&text);
+        calls.push(Call {
+            caller: "unknown".to_string(),
+            callee,
+            line: n.range().start_point.row + 1,
+        });
+    })?;
+    Ok(calls)
+}
+
+fn extract_calls_prisma(_node: &tree_sitter::Node, _source: &[u8]) -> Result<Vec<Call>> {
+    // Prisma doesn't have traditional function calls
+    Ok(vec![])
+}
+
+fn extract_calls_graphql(_node: &tree_sitter::Node, _source: &[u8]) -> Result<Vec<Call>> {
+    // GraphQL doesn't have traditional function calls
+    Ok(vec![])
+}
+
+fn extract_calls_sql(_node: &tree_sitter::Node, _source: &[u8]) -> Result<Vec<Call>> {
+    // SQL doesn't have traditional function calls
+    Ok(vec![])
+}
+
+/// C: `func(args)` -> `func`; C++: `obj.method(args)` -> `method`
+fn extract_c_cpp_call_callee(text: &str) -> String {
+    last_segment(callee_head(text), &["::", ".", "->"]).to_string()
+}
+
+/// Dart: `obj.method(args)` -> `method`
+fn extract_dart_call_callee(text: &str) -> String {
+    last_segment(callee_head(text), &["."]).to_string()
+}
+
+/// Swift: `obj.method(args)` -> `method`
+fn extract_swift_call_callee(text: &str) -> String {
+    last_segment(callee_head(text), &["."]).to_string()
+}
+
+/// Kotlin: `obj.method(args)` -> `method`
+fn extract_kotlin_call_callee(text: &str) -> String {
+    last_segment(callee_head(text), &["."]).to_string()
+}
+
+/// Lua: `obj:method(args)` or `func(args)` -> `method` or `func`
+fn extract_lua_call_callee(text: &str) -> String {
+    last_segment(callee_head(text), &[":", "."]).to_string()
+}
+
+/// Zig: `obj.method(args)` -> `method`
+fn extract_zig_call_callee(text: &str) -> String {
+    last_segment(callee_head(text), &["."]).to_string()
+}
+
+/// Elixir: `Module.function(args)` -> `function`
+fn extract_elixir_call_callee(text: &str) -> String {
+    last_segment(callee_head(text), &["."]).to_string()
+}
+
+/// Haskell: `func args` -> `func`
+fn extract_haskell_call_callee(text: &str) -> String {
+    let head = callee_head(text);
+    head.split_whitespace().next().unwrap_or(head).to_string()
+}
+
+/// OCaml: `Module.func args` -> `func`
+fn extract_ocaml_call_callee(text: &str) -> String {
+    last_segment(callee_head(text), &["."]).to_string()
 }
 
 // ---------------------------------------------------------------------------
@@ -800,6 +1858,198 @@ fn extract_extends(
                 },
             )?;
         }
+        "go" => {
+            // Go uses interfaces implicitly; no explicit extends in AST
+            // Could add struct embedding detection here if needed
+        }
+        "java" => {
+            collect_nodes_by_type(
+                node,
+                source,
+                &["class_declaration", "interface_declaration"],
+                &mut |n, src| {
+                    let Some(name_node) = n.child_by_field_name("name") else {
+                        return;
+                    };
+                    let child = last_type_segment(&node_text(&name_node, src).unwrap_or_default());
+                    let text = node_text(n, src).unwrap_or_default();
+                    for (keyword, rest) in [("extends", text.as_str()), ("implements", text.as_str())] {
+                        let Some(pos) = rest.find(keyword) else {
+                            continue;
+                        };
+                        let after = &rest[pos + keyword.len()..];
+                        // Stop at next keyword or brace
+                        let after = after.split(&['{', 'e', 'i'][..]).next().unwrap_or(after);
+                        for part in after.split(',') {
+                            let parent = last_type_segment(part);
+                            if !parent.is_empty() {
+                                out.push(Heritage {
+                                    child: child.clone(),
+                                    parent,
+                                    line: n.range().start_point.row + 1,
+                                });
+                            }
+                        }
+                    }
+                },
+            )?;
+        }
+        "c_sharp" => {
+            collect_nodes_by_type(
+                node,
+                source,
+                &["class_declaration", "interface_declaration", "struct_declaration"],
+                &mut |n, src| {
+                    let Some(name_node) = n.child_by_field_name("name") else {
+                        return;
+                    };
+                    let child = last_type_segment(&node_text(&name_node, src).unwrap_or_default());
+                    let text = node_text(n, src).unwrap_or_default();
+                    // C# uses : for inheritance
+                    if let Some(colon_pos) = text.find(':') {
+                        let after = &text[colon_pos + 1..];
+                        let after = after.split('{').next().unwrap_or(after);
+                        for part in after.split(',') {
+                            let parent = last_type_segment(part);
+                            if !parent.is_empty() {
+                                out.push(Heritage {
+                                    child: child.clone(),
+                                    parent,
+                                    line: n.range().start_point.row + 1,
+                                });
+                            }
+                        }
+                    }
+                },
+            )?;
+        }
+        "c" | "cpp" => {
+            collect_nodes_by_type(
+                node,
+                source,
+                &["class_specifier", "struct_specifier"],
+                &mut |n, src| {
+                    let text = node_text(n, src).unwrap_or_default();
+                    if let Some(colon_pos) = text.find(':') {
+                        let after = &text[colon_pos + 1..];
+                        let after = after.split('{').next().unwrap_or(after);
+                        let child = text.split_whitespace().nth(1).unwrap_or("").split(':').next().unwrap_or("");
+                        let child = last_type_segment(child);
+                        for part in after.split(',') {
+                            let parent = last_type_segment(part);
+                            if !parent.is_empty() && !child.is_empty() {
+                                out.push(Heritage {
+                                    child: child.to_string(),
+                                    parent,
+                                    line: n.range().start_point.row + 1,
+                                });
+                            }
+                        }
+                    }
+                },
+            )?;
+        }
+        "dart" => {
+            collect_nodes_by_type(node, source, &["class_declaration", "mixin_declaration"], &mut |n, src| {
+                let text = node_text(n, src).unwrap_or_default();
+                let child = text.split_whitespace().nth(1).unwrap_or("");
+                let child = last_type_segment(child);
+                let text_clone = text.clone();
+                for (keyword, rest) in [("extends", text), ("implements", text_clone.clone()), ("with", text_clone)] {
+                    let Some(pos) = rest.find(keyword) else { continue; };
+                    let after = &rest[pos + keyword.len()..];
+                    let after = after.split(&['{', 'e', 'i', 'w'][..]).next().unwrap_or(after);
+                    for part in after.split(',') {
+                        let parent = last_type_segment(part);
+                        if !parent.is_empty() && !child.is_empty() {
+                            out.push(Heritage { child: child.to_string(), parent, line: n.range().start_point.row + 1 });
+                        }
+                    }
+                }
+            })?;
+        }
+        "swift" => {
+            collect_nodes_by_type(node, source, &["class_declaration", "struct_declaration", "enum_declaration", "protocol_declaration"], &mut |n, src| {
+                let text = node_text(n, src).unwrap_or_default();
+                if let Some(colon_pos) = text.find(':') {
+                    let after = &text[colon_pos + 1..];
+                    let after = after.split('{').next().unwrap_or(after);
+                    let child = text.split_whitespace().nth(1).unwrap_or("");
+                    let child = last_type_segment(child);
+                    for part in after.split(',') {
+                        let parent = last_type_segment(part);
+                        if !parent.is_empty() && !child.is_empty() {
+                            out.push(Heritage { child: child.to_string(), parent, line: n.range().start_point.row + 1 });
+                        }
+                    }
+                }
+            })?;
+        }
+        "kotlin" => {
+            collect_nodes_by_type(node, source, &["class_declaration", "interface_declaration"], &mut |n, src| {
+                let text = node_text(n, src).unwrap_or_default();
+                if let Some(colon_pos) = text.find(':') {
+                    let after = &text[colon_pos + 1..];
+                    let after = after.split('{').next().unwrap_or(after);
+                    let child = text.split_whitespace().nth(1).unwrap_or("");
+                    let child = last_type_segment(child);
+                    for part in after.split(',') {
+                        let parent = last_type_segment(part);
+                        if !parent.is_empty() && !child.is_empty() {
+                            out.push(Heritage { child: child.to_string(), parent, line: n.range().start_point.row + 1 });
+                        }
+                    }
+                }
+            })?;
+        }
+        "zig" => {
+            // Zig uses comptime and @TypeOf for polymorphism, no traditional inheritance
+        }
+        "elixir" => {
+            // Elixir uses behaviours and protocols, no traditional inheritance
+        }
+        "haskell" => {
+            // Haskell uses typeclasses, not traditional inheritance
+        }
+        "ocaml" => {
+            // OCaml uses modules and module types, no traditional inheritance
+        }
+        "prisma" => {
+            collect_nodes_by_type(node, source, &["model_declaration"], &mut |n, src| {
+                let text = node_text(n, src).unwrap_or_default();
+                if let Some(extends_pos) = text.find("extends") {
+                    let after = &text[extends_pos + 7..];
+                    let child = text.split_whitespace().nth(1).unwrap_or("");
+                    let child = last_type_segment(child);
+                    for part in after.split_whitespace() {
+                        let parent = last_type_segment(part);
+                        if !parent.is_empty() && !child.is_empty() {
+                            out.push(Heritage { child: child.to_string(), parent, line: n.range().start_point.row + 1 });
+                        }
+                    }
+                }
+            })?;
+        }
+        "graphql" => {
+            collect_nodes_by_type(node, source, &["object_type_definition", "interface_type_definition"], &mut |n, src| {
+                let text = node_text(n, src).unwrap_or_default();
+                if let Some(impl_pos) = text.find("implements") {
+                    let after = &text[impl_pos + 10..];
+                    let after = after.split('{').next().unwrap_or(after);
+                    let child = text.split_whitespace().nth(1).unwrap_or("");
+                    let child = last_type_segment(child);
+                    for part in after.split('&') {
+                        let parent = last_type_segment(part);
+                        if !parent.is_empty() && !child.is_empty() {
+                            out.push(Heritage { child: child.to_string(), parent, line: n.range().start_point.row + 1 });
+                        }
+                    }
+                }
+            })?;
+        }
+        "sql" => {
+            // SQL doesn't have traditional inheritance
+        }
         _ => {}
     }
     Ok(out)
@@ -810,7 +2060,7 @@ fn last_type_segment(text: &str) -> String {
     let t = text.trim();
     let t = t.split('<').next().unwrap_or(t).trim();
     let seg = t
-        .rsplit(|c: char| c == '.' || c == ':')
+        .rsplit(&['.', ':'][..])
         .next()
         .unwrap_or(t)
         .trim();

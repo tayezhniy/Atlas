@@ -15,3 +15,9 @@ impl LanguageQueries {
         }
     }
 }
+
+impl Default for LanguageQueries {
+    fn default() -> Self {
+        Self::new()
+    }
+}

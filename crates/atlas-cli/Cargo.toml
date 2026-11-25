@@ -3,7 +3,8 @@ name = "atlas-cli"
 version.workspace = true
 description = "CLI Atlas: команды index, mcp, run, doctor"
 authors = ["Дмитрий"]
-edition = "2021"
+edition.workspace = true
+rust-version.workspace = true
 
 [dependencies]
 atlas-store = { path = "../atlas-store" }

@@ -85,6 +85,12 @@ impl KnowledgeGraph {
     }
 }
 
+impl Default for KnowledgeGraph {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Строит граф в памяти из хранилища, применяя ранжирование.
 pub fn build_graph(store: &Store, _ranker: &Ranker) -> anyhow::Result<KnowledgeGraph> {
     let mut graph = KnowledgeGraph::new();

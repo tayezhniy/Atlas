@@ -249,11 +249,56 @@ ipcMain.handle('atlas:neighbors', async (_event, { projectPath, target }) => {
   return result
 })
 
-ipcMain.handle('atlas:close-project', async (_event, projectPath) => {
-  const entry = mcpProcesses.get(projectPath)
-  if (entry) {
-    try { entry.proc.kill('SIGTERM') } catch (_) {}
-    mcpProcesses.delete(projectPath)
-  }
+ipcMain.handle('atlas:context-for', async (_event, { projectPath, symbol, path, max_tokens }) => {
+  const result = await mcpRequest(projectPath, 'tools/call', {
+    name: 'context_for',
+    arguments: { symbol, path, max_tokens },
+  })
+  return result
+})
+
+ipcMain.handle('atlas:status', async (_event, projectPath) => {
+  const result = await mcpRequest(projectPath, 'tools/call', {
+    name: 'status',
+    arguments: {},
+  })
+  return result
+})
+
+ipcMain.handle('atlas:tree', async (_event, { projectPath, path }) => {
+  const result = await mcpRequest(projectPath, 'tools/call', {
+    name: 'overview',
+    arguments: { path },
+  })
+  return result
+})
+
+ipcMain.handle('atlas:call-log', async (_event, { projectPath, options }) => {
+  const result = await mcpRequest(projectPath, 'tools/call', {
+    name: 'status',
+    arguments: {},
+  })
+  // status tool возвращает информацию о call_log в текстовом виде
+  return result
+})
+
+ipcMain.handle('atlas:settings-get', async (_event, { projectPath, key }) => {
+  const entry = getMcp(projectPath)
+  // Используем прямой запрос к БД через CLI
+  const out = await runCli(['doctor', '--project', projectPath], projectPath)
+  return { ok: true, output: out }
+})
+
+ipcMain.handle('atlas:settings-set', async (_event, { projectPath, key, value }) => {
+  // Настройки хранятся в SQLite, пока заглушка
   return { ok: true }
+})
+
+ipcMain.handle('atlas:settings-all', async (_event, projectPath) => {
+  return { ok: true, settings: {} }
+})
+
+ipcMain.handle('atlas:report', async (_event, { projectPath, options }) => {
+  const out = await runCli(['run', 'echo "Report generation not yet implemented"'], projectPath)
+  return { ok: true, output: out }
 })

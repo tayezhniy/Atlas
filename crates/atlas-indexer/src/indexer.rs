@@ -8,6 +8,7 @@ use crate::support::{
     resolve_import_target as resolve_import, simple_name,
 };
 use crate::walker::{ProjectWalker, WalkedFile};
+use crate::lsp_client::{LspClient, LspRegistry};
 use atlas_langs::{LanguageParser, ParsedFile};
 use atlas_store::db::Store;
 use atlas_store::schema::{Confidence, Edge, EdgeKind, FileMeta, Node, NodeKind};
@@ -16,6 +17,7 @@ use chrono::Utc;
 use rusqlite::{params, OptionalExtension};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
@@ -27,6 +29,12 @@ pub struct IndexStats {
     pub symbols_extracted: usize,
     pub imports_extracted: usize,
     pub calls_extracted: usize,
+    /// Вызовы, для которых найден вызываемый символ (связь попала в граф).
+    pub calls_linked: usize,
+    /// Вызовы, которые не удалось разрешить (неоднозначное имя).
+    pub calls_unresolved: usize,
+    /// Связи с уверенностью `guess`: неоднозначное имя, привязка ко всем кандидатам.
+    pub calls_guessed: usize,
     pub errors: usize,
 }
 
@@ -45,7 +53,12 @@ pub struct ProjectIndexer<'a> {
     pending_extends: Vec<PendingRef>,
     /// Входящие связи из неизменённых файлов в изменённый: (ребро, путь, имя, вид цели)
     preserved_edges: Vec<(Edge, String, String, String)>,
+    /// Опциональный LSP-клиент для динамического разрешения вызовов.
+    lsp_client: Option<Arc<LspClient>>,
 }
+
+/// Максимум кандидатов, на которые ставится связь `guess` при неоднозначном имени.
+const MAX_GUESS_CANDIDATES: usize = 3;
 
 struct PendingRef {
     src: Uuid,
@@ -72,12 +85,111 @@ impl<'a> ProjectIndexer<'a> {
             pending_imports: Vec::new(),
             pending_extends: Vec::new(),
             preserved_edges: Vec::new(),
+            lsp_client: None,
         }
+    }
+
+    /// Инициализирует LSP-клиенты для поддерживаемых языков в проекте.
+    pub async fn init_lsp_clients(&mut self) -> Result<()> {
+        let root_path = PathBuf::from(&self.root_path);
+        let client = LspClient::new(&root_path).await?;
+        let configs = LspRegistry::all();
+        
+        for config in configs {
+            if root_path.join(config.root_markers[0]).exists() {
+                if let Err(e) = client.ensure_started(&config).await {
+                    warn!("Failed to start LSP server for {}: {}", config.language, e);
+                } else {
+                    info!("LSP server started for {}", config.language);
+                }
+            }
+        }
+        
+        self.lsp_client = Some(Arc::new(client));
+        Ok(())
+    }
+
+    /// Улучшает разрешение вызовов с помощью LSP call hierarchy.
+    /// Улучшает граф вызовов с помощью LSP call hierarchy.
+    /// Проходит по всем функциям/методам в проекте и запрашивает входящие/исходящие вызовы.
+    async fn enhance_calls_with_lsp(&mut self) -> Result<()> {
+        let Some(lsp_client) = &self.lsp_client else {
+            return Ok(());
+        };
+
+        info!("Enhancing call graph with LSP call hierarchy...");
+
+        // Получаем все символы-функции/методы из БД
+        let symbols = self.store.nodes_of_kinds(&[NodeKind::Function, NodeKind::Method])?;
+
+        let mut enhanced_count = 0;
+        for symbol in symbols {
+            let Some(line_start) = symbol.line_start else { continue };
+            let path = Path::new(&symbol.path);
+
+            // Используем начало диапазона символа для позиции
+            let line = line_start as u32;
+            let character = 0;
+
+            // Получаем входящие вызовы (кто вызывает эту функцию)
+            if let Ok(incoming) = lsp_client.incoming_calls(path, line, character).await {
+                for inc in incoming {
+                    if let Some(dst_id) = self.find_symbol_id(&inc.callee_path, &inc.callee) {
+                        if let Some(caller_id) = self.find_symbol_id(&inc.caller_path, &inc.caller) {
+                            if caller_id != dst_id {
+                                self.store.upsert_edge(&Edge {
+                                    src_id: caller_id,
+                                    dst_id: dst_id,
+                                    kind: EdgeKind::Calls,
+                                    confidence: Confidence::Likely,
+                                    weight: 1.0,
+                                })?;
+                                enhanced_count += 1;
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Получаем исходящие вызовы (что вызывает эта функция)
+            if let Ok(outgoing) = lsp_client.outgoing_calls(path, line, character).await {
+                for out in outgoing {
+                    if let Some(caller_id) = self.find_symbol_id(&out.caller_path, &out.caller) {
+                        if let Some(callee_id) = self.find_symbol_id(&out.callee_path, &out.callee) {
+                            if caller_id != callee_id {
+                                self.store.upsert_edge(&Edge {
+                                    src_id: caller_id,
+                                    dst_id: callee_id,
+                                    kind: EdgeKind::Calls,
+                                    confidence: Confidence::Likely,
+                                    weight: 1.0,
+                                })?;
+                                enhanced_count += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if enhanced_count > 0 {
+            self.stats.calls_linked += enhanced_count;
+            info!("LSP enhanced call graph with {} additional edges", enhanced_count);
+        }
+
+        Ok(())
     }
 
     /// Полная индексация проекта: обход, парсинг, запись в БД.
     pub fn index_project(&mut self) -> Result<IndexStats> {
         info!("Начало индексации проекта: {}", self.root_path);
+        
+        // Инициализируем LSP-клиенты асинхронно
+        let rt = tokio::runtime::Runtime::new()?;
+        if let Err(e) = rt.block_on(self.init_lsp_clients()) {
+            warn!("Failed to initialize LSP clients: {}", e);
+        }
+        
         self.upsert_project_record()?;
         self.preload_maps()?;
 
@@ -98,6 +210,14 @@ impl<'a> ProjectIndexer<'a> {
 
         self.delete_missing_files(&files)?;
         self.finish()?;
+
+        // LSP-расширение: улучшаем граф вызовов через call hierarchy
+        if self.lsp_client.is_some() {
+            if let Err(e) = rt.block_on(self.enhance_calls_with_lsp()) {
+                warn!("LSP call hierarchy enhancement failed: {}", e);
+            }
+        }
+
         Ok(self.stats.clone())
     }
 
@@ -500,8 +620,12 @@ impl<'a> ProjectIndexer<'a> {
     /// Превращает собранные вызовы, импорты и наследование в рёбра графа.
     fn resolve_pending(&mut self) -> Result<()> {
         let imports = std::mem::take(&mut self.pending_imports);
+        // Карта «файл -> файлы, которые он импортирует»: нужна, чтобы сузить
+        // кандидатов на роль вызываемого символа (раздел 4.5 ТЗ).
+        let mut imports_by_file: HashMap<String, Vec<Uuid>> = HashMap::new();
         for imp in imports {
             if let Some(dst) = self.resolve_import_target(&imp.target, &imp.from_path) {
+                imports_by_file.entry(imp.from_path.clone()).or_default().push(dst);
                 if dst != imp.src {
                     self.store.upsert_edge(&Edge {
                         src_id: imp.src,
@@ -532,12 +656,81 @@ impl<'a> ProjectIndexer<'a> {
                 (id, Confidence::Certain)
             } else {
                 let candidates = self.store.symbols_by_name(&call.name)?;
-                if candidates.len() == 1 {
+                // Сначала сужаем кандидатов до файлов, которые вызывающий файл
+                // импортирует: так имя `run` разрешается в `helper::run`, а не
+                // теряется из-за одноимённых методов в других модулях.
+                let imported: Vec<Uuid> = imports_by_file
+                    .get(&call.path)
+                    .cloned()
+                    .unwrap_or_default();
+                let scoped: Vec<Node> = candidates
+                    .iter()
+                    .filter(|n| {
+                        self.file_node_ids
+                            .get(&n.path)
+                            .map(|f| imported.contains(f))
+                            .unwrap_or(false)
+                    })
+                    .cloned()
+                    .collect();
+                if scoped.len() == 1 {
+                    (scoped[0].id, Confidence::Likely)
+                } else if candidates.len() == 1 {
                     (candidates[0].id, Confidence::Likely)
                 } else {
-                    continue;
+                    // Имена вида `run`/`new` живут в нескольких модулях. Сначала
+                    // пробуем соседей по каталогу, затем — единственного кандидата
+                    // «функция/метод» (конструкторы и классы отбрасываем).
+                    let caller_dir = Path::new(&call.path)
+                        .parent()
+                        .and_then(|p| p.to_str())
+                        .unwrap_or("");
+                    let same_dir: Vec<&Node> = candidates
+                        .iter()
+                        .filter(|n| {
+                            Path::new(&n.path)
+                                .parent()
+                                .and_then(|p| p.to_str())
+                                .unwrap_or("")
+                                == caller_dir
+                        })
+                        .collect();
+                    let callable: Vec<&Node> = candidates
+                        .iter()
+                        .filter(|n| {
+                            matches!(n.kind, NodeKind::Function | NodeKind::Method)
+                        })
+                        .collect();
+                    if same_dir.len() == 1 {
+                        (same_dir[0].id, Confidence::Guess)
+                    } else if callable.len() == 1 {
+                        (callable[0].id, Confidence::Guess)
+                    } else if candidates.len() <= MAX_GUESS_CANDIDATES {
+                        // Неоднозначное имя с небольшим числом кандидатов:
+                        // привязываем ко всем, но с уверенностью `guess` —
+                        // потребитель видит метку и может отфильтровать.
+                        for cand in &candidates {
+                            if cand.id == call.src {
+                                continue;
+                            }
+                            self.store.upsert_edge(&Edge {
+                                src_id: call.src,
+                                dst_id: cand.id,
+                                kind: EdgeKind::Calls,
+                                confidence: Confidence::Guess,
+                                weight: 1.0,
+                            })?;
+                            self.stats.calls_linked += 1;
+                            self.stats.calls_guessed += 1;
+                        }
+                        continue;
+                    } else {
+                        self.stats.calls_unresolved += 1;
+                        continue;
+                    }
                 }
             };
+            self.stats.calls_linked += 1;
             if dst == call.src {
                 continue;
             }
@@ -584,6 +777,15 @@ impl<'a> ProjectIndexer<'a> {
                 })?;
             }
         }
+
+        // LSP-расширение: если есть LSP-клиент, пробуем улучшить вызовы через call hierarchy
+        if let Some(_lsp_client) = &self.lsp_client {
+            // Вызываем enhance_calls_with_lsp для улучшения графа вызовов
+            // pending_calls уже обработаны статически, но мы можем добавить
+            // дополнительные связи, найденные через LSP call hierarchy
+            debug!("LSP client available for enhanced call resolution");
+        }
+
         Ok(())
     }
 }

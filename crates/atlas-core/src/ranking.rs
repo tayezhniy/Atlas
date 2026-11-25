@@ -84,6 +84,12 @@ impl Ranker {
     }
 }
 
+impl Default for Ranker {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Пересчитывает ранги всех узлов по PageRank на рёбрах `imports` и `calls`.
 ///
 /// Раньше ранг был просто нормированной входящей степенью; PageRank учитывает,

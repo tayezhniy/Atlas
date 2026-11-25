@@ -3,7 +3,8 @@ name = "atlas-core"
 version.workspace = true
 description = "Ядро Atlas: модель данных, граф, ранжирование, поиск, генерация карты и отчёта"
 authors = ["Дмитрий"]
-edition = "2021"
+edition.workspace = true
+rust-version.workspace = true
 
 [dependencies]
 atlas-store = { path = "../atlas-store" }

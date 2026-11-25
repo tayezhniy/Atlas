@@ -3,12 +3,32 @@ name = "atlas-langs"
 version.workspace = true
 description = "Языковые плагины Atlas: запросы tree-sitter по языкам (parsing plugins)"
 authors = ["Дмитрий"]
-edition = "2021"
+edition.workspace = true
+rust-version.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
 
 [dependencies]
 tree-sitter = { workspace = true }
-tree-sitter-rust = "0.21"
-tree-sitter-python = "0.21"
-tree-sitter-typescript = "0.21"
+tree-sitter-rust = "0.23"
+tree-sitter-python = "0.23"
+tree-sitter-typescript = "0.23"
+tree-sitter-go = "0.25"
+tree-sitter-java = "0.23"
+tree-sitter-c-sharp = "0.24"
+tree-sitter-c = "0.24"
+tree-sitter-cpp = "0.23"
+tree-sitter-dart = "0.3"
+tree-sitter-swift = "0.7"
+tree-sitter-kt = "0.1"
+tree-sitter-lua = "0.5"
+tree-sitter-zig = "1.1"
+tree-sitter-elixir = "0.3"
+tree-sitter-haskell = "0.24"
+tree-sitter-ocaml = "0.26"
+tree-sitter-prisma = "0.2"
+tree-sitter-graphql = "0.3"
+tree-sitter-snowflake = "0.3"
 thiserror = { workspace = true }
 anyhow = { workspace = true }

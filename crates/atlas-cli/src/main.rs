@@ -67,8 +67,12 @@ fn main() -> Result<()> {
                 stats.files_scanned, stats.files_indexed, stats.errors
             );
             println!(
-                "Символов {}, импортов {}, вызовов {}",
-                stats.symbols_extracted, stats.imports_extracted, stats.calls_extracted
+                "Символов {}, импортов {}, вызовов {} (связей {} из них, не разрешено {})",
+                stats.symbols_extracted,
+                stats.imports_extracted,
+                stats.calls_extracted,
+                stats.calls_linked,
+                stats.calls_unresolved
             );
             println!("Индекс: {}", db_path(&root).display());
         }
@@ -237,31 +241,28 @@ fn cmd_watch(root: &Path) -> Result<()> {
         ProjectIndexer::new(&mut store, &root_str).index_project()?;
     }
 
-    let mut watcher = atlas_indexer::FileWatcher::new()?;
+    let mut watcher = FileWatcher::new()?;
     watcher.watch(root)?;
     println!("👀 Наблюдение за {} (Ctrl+C для остановки)...", root.display());
 
     loop {
         match watcher.next_event() {
-            Some(atlas_indexer::WatchEvent::Modified(p))
-            | Some(atlas_indexer::WatchEvent::Created(p)) => {
+            Some(WatchEvent::Modified(p))
+            | Some(WatchEvent::Created(p)) => {
                 if let Ok(rel) = p.strip_prefix(root) {
                     let rel_str = rel.to_string_lossy().to_string();
                     if rel_str.starts_with(".atlas/") || rel_str.starts_with(".git/") {
                         continue;
                     }
-                    match std::fs::read_to_string(&p) {
-                        Ok(content) => {
-                            let mut upd = IncrementalUpdater::new(&mut store, &root_str);
-                            if upd.update_file(&rel_str, &content)? {
-                                println!("🔄 Переиндексирован: {}", rel_str);
-                            }
+                    if let Ok(content) = std::fs::read_to_string(&p) {
+                        let mut upd = IncrementalUpdater::new(&mut store, &root_str);
+                        if upd.update_file(&rel_str, &content)? {
+                            println!("🔄 Переиндексирован: {}", rel_str);
                         }
-                        Err(_) => {}
                     }
                 }
             }
-            Some(atlas_indexer::WatchEvent::Deleted(p)) => {
+            Some(WatchEvent::Deleted(p)) => {
                 if let Ok(rel) = p.strip_prefix(root) {
                     let rel_str = rel.to_string_lossy().to_string();
                     store.delete_nodes_by_path(&rel_str)?;
@@ -270,7 +271,7 @@ fn cmd_watch(root: &Path) -> Result<()> {
                     println!("🗑️  Удалён из индекса: {}", rel_str);
                 }
             }
-            Some(atlas_indexer::WatchEvent::Renamed(from, to)) => {
+            Some(WatchEvent::Renamed(from, to)) => {
                 if let Ok(rel_from) = from.strip_prefix(root) {
                     let rel_from_str = rel_from.to_string_lossy().to_string();
                     store.delete_nodes_by_path(&rel_from_str)?;
@@ -278,7 +279,7 @@ fn cmd_watch(root: &Path) -> Result<()> {
                 if let Ok(rel_to) = to.strip_prefix(root) {
                     if let Ok(content) = std::fs::read_to_string(&to) {
                         let mut upd = IncrementalUpdater::new(&mut store, &root_str);
-                        if upd.update_file(&rel_to.to_string_lossy().to_string(), &content)? {
+                        if upd.update_file(rel_to.to_string_lossy().as_ref(), &content)? {
                             println!("🔄 Переиндексирован (переименован): {}", rel_to.to_string_lossy());
                         }
                     }

@@ -3,8 +3,6 @@ import {
   File,
   ChevronRight,
   ChevronDown,
-  Link,
-  Clock,
   ArrowUpRight,
   ArrowLeftRight,
 } from 'lucide-react'

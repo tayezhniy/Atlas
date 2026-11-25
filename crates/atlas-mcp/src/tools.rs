@@ -305,12 +305,13 @@ impl ToolRegistry {
                 let extra = symbols.get(&f.path).map(|v| v.len().saturating_sub(8)).unwrap_or(0);
                 let tail = if extra > 0 { format!(" …+{extra}") } else { String::new() };
                 lines.push(format!(
-                    "{} ({}, ~{} ток.){}{}",
+                    "{} ({}, ~{} ток.){}{}{}",
                     f.path,
                     f.lang.as_deref().unwrap_or("?"),
                     f.tokens_est,
                     if names.is_empty() { "" } else { ": " },
-                    format!("{}{}", names.join(", "), tail)
+                    names.join(", "),
+                    tail
                 ));
             }
         } else {

@@ -3,7 +3,8 @@ name = "atlas-store"
 version.workspace = true
 description = "Хранилище индекса Atlas: SQLite, миграции, FTS5"
 authors = ["Дмитрий"]
-edition = "2021"
+edition.workspace = true
+rust-version.workspace = true
 
 [dependencies]
 serde = { workspace = true }
@@ -12,3 +13,6 @@ chrono = { workspace = true }
 thiserror = { workspace = true }
 anyhow = { workspace = true }
 rusqlite = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"

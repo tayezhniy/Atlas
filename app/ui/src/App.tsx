@@ -2,7 +2,6 @@ import { useState, useEffect, useCallback } from 'react'
 import {
   LayoutDashboard,
   FileText,
-  GitBranch,
   Activity,
   BarChart2,
   Search,
@@ -15,18 +14,25 @@ import {
   Folder,
   AlertCircle,
   CheckCircle,
+  X,
+  ChevronLeft,
+  ChevronRight,
 } from 'lucide-react'
 import FileTree from './components/FileTree'
 import Graph from './components/Graph'
 import FileView from './components/FileView'
 import Inspector from './components/Inspector'
 import TokenPanel from './components/TokenPanel'
-import type { GraphNode, ProjectOverview } from './types'
+import CommandPalette from './components/CommandPalette'
+import SettingsPanel from './components/Settings'
+import ReportExport from './components/ReportExport'
+import type { GraphNode, ProjectOverview, SearchResult } from './types'
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<'graph' | 'file' | 'map' | 'report'>('graph')
   const [selectedNode, setSelectedNode] = useState<string | null>(null)
   const [sidebarOpen, setSidebarOpen] = useState(true)
+  const [rightSidebarOpen, setRightSidebarOpen] = useState(true)
   const [projects, setProjects] = useState<string[]>([])
   const [activeProject, setActiveProject] = useState<string | null>(null)
   const [indexing, setIndexing] = useState(false)
@@ -36,6 +42,12 @@ export default function App() {
   const [graphEdges, setGraphEdges] = useState<Array<{ source: string; target: string }>>([])
   const [error, setError] = useState<string | null>(null)
   const [status, setStatus] = useState<'idle' | 'indexing' | 'ready' | 'error'>('idle')
+  const [recentFiles, setRecentFiles] = useState<string[]>([])
+
+  // Модальные окна
+  const [commandPaletteOpen, setCommandPaletteOpen] = useState(false)
+  const [settingsOpen, setSettingsOpen] = useState(false)
+  const [reportExportOpen, setReportExportOpen] = useState(false)
 
   const tabs = [
     { id: 'graph' as const, label: 'Граф', icon: <Activity className="w-4 h-4" /> },
@@ -48,6 +60,48 @@ export default function App() {
   useEffect(() => {
     if (!window.atlasAPI) return
     window.atlasAPI.ping().then(() => setStatus('ready')).catch(() => setStatus('error'))
+
+    // Глобальные хоткеи
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Ctrl+P - поиск файлов
+      if ((e.ctrlKey || e.metaKey) && e.key === 'p' && !e.shiftKey) {
+        e.preventDefault()
+        setCommandPaletteOpen(true)
+      }
+      // Ctrl+Shift+F - поиск символов
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'f') {
+        e.preventDefault()
+        setCommandPaletteOpen(true)
+      }
+      // Ctrl+K - команды
+      if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
+        e.preventDefault()
+        setCommandPaletteOpen(true)
+      }
+      // Ctrl+, - настройки
+      if ((e.ctrlKey || e.metaKey) && e.key === ',') {
+        e.preventDefault()
+        setSettingsOpen(true)
+      }
+      // Ctrl+B - переключение левой боковой панели
+      if ((e.ctrlKey || e.metaKey) && e.key === 'b') {
+        e.preventDefault()
+        setSidebarOpen(v => !v)
+      }
+      // Ctrl+Shift+B - переключение правой боковой панели
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'b') {
+        e.preventDefault()
+        setRightSidebarOpen(v => !v)
+      }
+      // Escape - закрыть модалки
+      if (e.key === 'Escape') {
+        setCommandPaletteOpen(false)
+        setSettingsOpen(false)
+        setReportExportOpen(false)
+      }
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
   }, [])
 
   const handleOpenProject = useCallback(async (projectPath: string) => {
@@ -56,11 +110,13 @@ export default function App() {
     setStatus('indexing')
     try {
       await window.atlasAPI.openProject(projectPath)
-      setProjects((prev) => (prev.includes(projectPath) ? prev : [...prev, projectPath]))
+      setProjects(prev => (prev.includes(projectPath) ? prev : [...prev, projectPath]))
       setActiveProject(projectPath)
       setIndexed(true)
       await loadOverview(projectPath)
       setStatus('ready')
+      // Добавляем в недавние файлы
+      setRecentFiles(prev => [projectPath, ...prev.filter(p => p !== projectPath)].slice(0, 10))
     } catch (err: any) {
       setError(err.message || 'Не удалось открыть проект')
       setStatus('error')
@@ -88,7 +144,6 @@ export default function App() {
     try {
       const ov = await window.atlasAPI.overview(projectPath)
       setOverview(ov)
-      // Узлы графа — топ-файлы из обзора
       const nodes: GraphNode[] = ov.top.map((n) => ({
         id: n.path,
         name: n.name,
@@ -98,10 +153,9 @@ export default function App() {
         tokens_est: n.tokens_est,
       }))
       setGraphNodes(nodes)
-      // Рёбра — упрощённо: связи между топ-файлами (будут уточняться через neighbours)
       setGraphEdges([])
     } catch (_) {
-      // обзор недоступен — оставим пустой граф
+      // обзор недоступен
     }
   }, [])
 
@@ -119,10 +173,67 @@ export default function App() {
     }
   }, [activeProject])
 
-  const handleNodeSelect = useCallback((nodeId: string | null) => {
+  const [searchResults, setSearchResults] = useState<SearchResult[]>([])
+
+  const handleNodeSelect = useCallback((nodeId: string | null, nodeType?: 'file' | 'symbol') => {
     setSelectedNode(nodeId)
-    if (activeTab !== 'file') setActiveTab('file')
+    if (nodeId && activeTab !== 'file') setActiveTab('file')
   }, [activeTab])
+
+  const handleGraphHighlight = useCallback((nodeId: string) => {
+    // Граф сам обработает подсветку через selectedNode
+    setSelectedNode(nodeId)
+    if (activeTab !== 'graph') setActiveTab('graph')
+  }, [activeTab])
+
+  const handleGoToDefinition = useCallback((symbol: string, path?: string) => {
+    if (!activeProject || !window.atlasAPI) return
+    // Ищем символ через search
+    window.atlasAPI.search({ projectPath: activeProject, query: symbol, limit: 5 })
+      .then(res => {
+        if (res.items.length > 0) {
+          const match = path
+            ? res.items.find(i => i.path === path)
+            : res.items[0]
+          if (match) {
+            const symbolId = `${match.path}::${match.name}`
+            setSelectedNode(symbolId)
+            setActiveTab('file')
+          }
+        }
+      })
+  }, [activeProject])
+
+  const handleCommand = useCallback((command: string) => {
+    switch (command) {
+      case 'index':
+        handleIndexProject()
+        break
+      case 'watch':
+        if (activeProject && window.atlasAPI) {
+          // Запускаем watch через CLI (нужно добавить в API)
+        }
+        break
+      case 'doctor':
+        if (activeProject && window.atlasAPI) {
+          window.atlasAPI.doctor(activeProject).then(r => {
+            alert(r.output || JSON.stringify(r.result))
+          })
+        }
+        break
+      case 'export-json':
+        setReportExportOpen(true)
+        // Формат JSON будет выбран по умолчанию
+        break
+      case 'export-md':
+        setReportExportOpen(true)
+        // Переключим на markdown после открытия
+        break
+      case 'settings':
+        setSettingsOpen(true)
+        break
+    }
+  }, [activeProject, handleIndexProject])
 
   return (
     <div className="atlas-app h-screen flex flex-col bg-background text-foreground">
@@ -173,16 +284,19 @@ export default function App() {
               </button>
               <button
                 className="flex items-center gap-2 px-3 py-1.5 rounded border hover:bg-accent text-xs"
-                onClick={() => handleSearch('')}
+                onClick={() => setCommandPaletteOpen(true)}
               >
                 <Search className="w-3 h-3" />
-                Поиск
+                Поиск (Ctrl+P)
               </button>
               <button className="flex items-center gap-2 px-3 py-1.5 rounded border hover:bg-accent text-xs">
                 <Copy className="w-3 h-3" />
                 Подключить клиент
               </button>
-              <button className="flex items-center gap-2 px-3 py-1.5 rounded border hover:bg-accent text-xs">
+              <button
+                className="flex items-center gap-2 px-3 py-1.5 rounded border hover:bg-accent text-xs"
+                onClick={() => setReportExportOpen(true)}
+              >
                 <ExternalLink className="w-3 h-3" />
                 Экспорт отчёта
               </button>
@@ -221,7 +335,10 @@ export default function App() {
               {overview.files} файлов, {overview.top.length} символов
             </div>
           )}
-          <button className="px-3 py-1.5 rounded border hover:bg-accent text-xs">
+          <button
+            className="px-3 py-1.5 rounded border hover:bg-accent text-xs"
+            onClick={() => setSettingsOpen(true)}
+          >
             <Settings className="w-3 h-3" />
           </button>
         </div>
@@ -236,35 +353,69 @@ export default function App() {
       <div className="flex-1 flex overflow-hidden">
         {/* Левая боковая панель */}
         {sidebarOpen && activeProject && (
-          <aside className="w-80 border-r flex flex-col">
+          <aside className="w-80 border-r flex flex-col transition-all duration-200">
             <div className="p-3 border-b">
               <div className="flex items-center gap-2 mb-3">
                 <Folder className="w-4 h-4" />
                 <span className="font-medium text-sm">Файлы</span>
+                <button
+                  onClick={() => setSidebarOpen(false)}
+                  className="ml-auto p-1 rounded hover:bg-muted text-muted-foreground"
+                  title="Скрыть панель (Ctrl+B)"
+                >
+                  <ChevronLeft className="w-4 h-4" />
+                </button>
               </div>
               <FileTree
                 projectPath={activeProject}
                 overview={overview}
                 onNodeSelect={handleNodeSelect}
+                onGraphHighlight={handleGraphHighlight}
+                selectedNode={selectedNode}
               />
             </div>
           </aside>
+        )}
+
+        {/* Кнопка открытия левой панели когда она закрыта */}
+        {!sidebarOpen && activeProject && (
+          <div className="w-8 border-r flex items-center justify-center bg-muted/50">
+            <button
+              onClick={() => setSidebarOpen(true)}
+              className="p-2 rounded hover:bg-muted text-muted-foreground"
+              title="Показать панель файлов (Ctrl+B)"
+            >
+              <ChevronRight className="w-5 h-5" />
+            </button>
+          </div>
         )}
 
         {/* Центральная область */}
         <main className="flex-1 flex flex-col relative">
           <div className="flex-1 overflow-hidden bg-background">
             {activeTab === 'graph' && (
-              <Graph nodes={graphNodes} edges={graphEdges} selectedNode={selectedNode} />
+              <Graph
+                nodes={graphNodes}
+                edges={graphEdges}
+                selectedNode={selectedNode}
+                onNodeClick={handleNodeSelect}
+                onNodeDoubleClick={(nodeId) => { handleNodeSelect(nodeId); setActiveTab('file'); }}
+              />
             )}
             {activeTab === 'file' && selectedNode && (
-              <FileView projectPath={activeProject ?? ''} nodeId={selectedNode} />
+              <FileView
+                projectPath={activeProject ?? ''}
+                nodeId={selectedNode}
+                onGoToDefinition={handleGoToDefinition}
+                onGraphHighlight={handleGraphHighlight}
+              />
             )}
             {activeTab === 'file' && !selectedNode && (
               <div className="h-full flex items-center justify-center">
                 <div className="text-center">
                   <FileText className="w-12 h-12 text-muted-foreground mx-auto mb-2" />
                   <p className="text-muted-foreground text-sm">Выберите символ или файл для просмотра</p>
+                  <p className="text-xs text-muted-foreground mt-2">Или нажмите Ctrl+P для поиска</p>
                 </div>
               </div>
             )}
@@ -278,7 +429,8 @@ export default function App() {
                   </p>
                   <div className="space-y-1 text-xs">
                     {overview.top.map((n) => (
-                      <div key={n.path} className="flex items-center justify-between px-3 py-1 bg-muted/50 rounded">
+                      <div key={n.path} className="flex items-center justify-between px-3 py-1 bg-muted/50 rounded cursor-pointer hover:bg-muted"
+                        onClick={() => { handleNodeSelect(n.path); setActiveTab('file'); }}>
                         <span className="font-mono truncate">{n.path}</span>
                         <span className="text-muted-foreground">~{n.tokens_est ?? 0} ток.</span>
                       </div>
@@ -316,27 +468,48 @@ export default function App() {
           </div>
         </main>
 
-        {/* Правая боковая панель — инспектор */}
-        <aside className="w-80 border-l flex flex-col">
-          {selectedNode ? (
-            <Inspector
-              projectPath={activeProject ?? ''}
-              nodeId={selectedNode}
-              onGraphSelect={(nodeId) => {
-                setSelectedNode(nodeId)
-                setActiveTab('graph')
-              }}
-            />
-          ) : (
-            <div className="h-full flex flex-col p-4">
-              <div className="flex items-center gap-3 text-muted-foreground">
-                <File className="w-5 h-5 opacity-50" />
-                <span>Выберите узел для просмотра деталей</span>
+        {/* Правая боковая панель — инспектор + токены */}
+        {rightSidebarOpen && (
+          <aside className="w-80 border-l flex flex-col transition-all duration-200">
+            {selectedNode ? (
+              <Inspector
+                projectPath={activeProject ?? ''}
+                nodeId={selectedNode}
+                onGraphSelect={(nodeId) => {
+                  setSelectedNode(nodeId)
+                  setActiveTab('graph')
+                }}
+              />
+            ) : (
+              <div className="h-64 flex flex-col p-4">
+                <div className="flex items-center gap-3 text-muted-foreground">
+                  <File className="w-5 h-5 opacity-50" />
+                  <span>Выберите узел для просмотра деталей</span>
+                </div>
               </div>
-            </div>
-          )}
-          <TokenPanel />
-        </aside>
+            )}
+            <TokenPanel projectPath={activeProject ?? ''} overview={overview} />
+            <button
+              onClick={() => setRightSidebarOpen(false)}
+              className="p-2 mx-3 mb-2 rounded hover:bg-muted text-muted-foreground self-end"
+              title="Скрыть панель (Ctrl+Shift+B)"
+            >
+              <ChevronRight className="w-5 h-5 rotate-180" />
+            </button>
+          </aside>
+        )}
+
+        {!rightSidebarOpen && (
+          <div className="w-8 border-l flex items-center justify-center bg-muted/50">
+            <button
+              onClick={() => setRightSidebarOpen(true)}
+              className="p-2 rounded hover:bg-muted text-muted-foreground"
+              title="Показать инспектор (Ctrl+Shift+B)"
+            >
+              <ChevronLeft className="w-5 h-5 rotate-180" />
+            </button>
+          </div>
+        )}
       </div>
 
       {/* Статусная строка */}
@@ -355,9 +528,35 @@ export default function App() {
           <span>Экономия: 0%</span>
         </div>
       </footer>
+
+      {/* Модальные окна */}
+      <CommandPalette
+        projectPath={activeProject ?? ''}
+        isOpen={commandPaletteOpen}
+        onClose={() => setCommandPaletteOpen(false)}
+        onSelectFile={(path) => { handleNodeSelect(path, 'file'); setActiveTab('file'); }}
+        onSelectSymbol={(symbol) => {
+          const symbolId = `${symbol.path}::${symbol.name}`
+          handleNodeSelect(symbolId, 'symbol')
+          setActiveTab('file')
+        }}
+        onRunCommand={handleCommand}
+        recentFiles={recentFiles}
+      />
+
+      <SettingsPanel
+        projectPath={activeProject ?? ''}
+        isOpen={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+      />
+
+      <ReportExport
+        projectPath={activeProject ?? ''}
+        overview={overview}
+        graphNodes={graphNodes}
+        isOpen={reportExportOpen}
+        onClose={() => setReportExportOpen(false)}
+      />
     </div>
   )
 }
-
-// eslint-disable-next-line no-unused-vars
-const _unused = [SearchResult, ProjectOverview]

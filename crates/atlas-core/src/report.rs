@@ -190,7 +190,7 @@ impl ReportGenerator {
             writeln!(out, "- {src} → {dst} ({n})")?;
         }
         let mut graph: BTreeMap<String, Vec<String>> = BTreeMap::new();
-        for ((src, dst), _) in &deps {
+        for (src, dst) in deps.keys() {
             graph.entry(src.clone()).or_default().push(dst.clone());
         }
         let cycles = find_cycles(&graph);

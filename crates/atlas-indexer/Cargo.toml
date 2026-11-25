@@ -1,15 +1,17 @@
 [package]
 name = "atlas-indexer"
 version.workspace = true
-description = "Индексатор Atlas: обход файлов, парсинг,observation, инкрементальное обновление"
+description = "Индексатор Atlas: обход файлов, парсинг, наблюдение, инкрементальное обновление"
 authors = ["Дмитрий"]
-edition = "2021"
+edition.workspace = true
+rust-version.workspace = true
 
 [dependencies]
 atlas-store = { path = "../atlas-store" }
 atlas-core = { path = "../atlas-core" }
 atlas-langs = { path = "../atlas-langs" }
 serde = { workspace = true }
+serde_json = { workspace = true }
 uuid = { workspace = true }
 chrono = { workspace = true }
 thiserror = { workspace = true }
@@ -18,5 +20,10 @@ tracing = { workspace = true }
 ignore = { workspace = true }
 notify = { workspace = true }
 rusqlite = { workspace = true }
+lsp-types = "0.93"
+tokio = { version = "1", features = ["full"] }
+tower-lsp = "0.19"
+tower = "0.4"
+url = "2"
 [dev-dependencies]
 tempfile = "3"

@@ -63,7 +63,7 @@ pub fn normalize_path(path: &Path) -> String {
 pub fn simple_name(callee: &str) -> String {
     let t = callee.trim();
     let t = t.split('<').next().unwrap_or(t);
-    t.rsplit(|c: char| c == '.' || c == ':')
+    t.rsplit(['.', ':'])
         .next()
         .unwrap_or(t)
         .trim()
@@ -78,6 +78,7 @@ pub fn map_symbol_kind(kind: &SymbolKind) -> NodeKind {
         SymbolKind::Interface => NodeKind::Interface,
         SymbolKind::Constant => NodeKind::Constant,
         SymbolKind::Type => NodeKind::Type,
+        SymbolKind::Field => NodeKind::Constant, // Fields are similar to constants
     }
 }
 

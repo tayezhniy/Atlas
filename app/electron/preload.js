@@ -21,22 +21,47 @@ contextBridge.exposeInMainWorld('atlasAPI', {
   search: ({ projectPath, query, limit }) =>
     ipcRenderer.invoke('atlas:search', { projectPath, query, limit }),
 
-  overview: (projectPath) =>
-    ipcRenderer.invoke('atlas:overview', { projectPath }),
+  overview: (projectPath, path) =>
+    ipcRenderer.invoke('atlas:overview', { projectPath, path }),
 
   outline: ({ projectPath, path: filePath }) =>
     ipcRenderer.invoke('atlas:outline', { projectPath, path: filePath }),
 
-  read: ({ projectPath, path: filePath, start_line, end_line }) =>
+  read: ({ projectPath, path: filePath, start_line, end_line, mode }) =>
     ipcRenderer.invoke('atlas:read', {
       projectPath,
       path: filePath,
       start_line,
       end_line,
+      mode: mode || 'full',
     }),
 
   neighbors: ({ projectPath, target }) =>
     ipcRenderer.invoke('atlas:neighbors', { projectPath, target }),
+
+  contextFor: ({ projectPath, symbol, path, max_tokens }) =>
+    ipcRenderer.invoke('atlas:context-for', { projectPath, symbol, path, max_tokens }),
+
+  status: (projectPath) =>
+    ipcRenderer.invoke('atlas:status', projectPath),
+
+  tree: (projectPath, path) =>
+    ipcRenderer.invoke('atlas:tree', { projectPath, path }),
+
+  callLog: (projectPath, options) =>
+    ipcRenderer.invoke('atlas:call-log', { projectPath, options }),
+
+  settings: {
+    get: (projectPath, key) =>
+      ipcRenderer.invoke('atlas:settings-get', { projectPath, key }),
+    set: (projectPath, key, value) =>
+      ipcRenderer.invoke('atlas:settings-set', { projectPath, key, value }),
+    all: (projectPath) =>
+      ipcRenderer.invoke('atlas:settings-all', projectPath),
+  },
+
+  report: (projectPath, options) =>
+    ipcRenderer.invoke('atlas:report', { projectPath, options }),
 
   closeProject: (projectPath) =>
     ipcRenderer.invoke('atlas:close-project', projectPath),

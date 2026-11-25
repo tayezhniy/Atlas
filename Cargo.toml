@@ -28,6 +28,6 @@ rusqlite = { version = "0.31", features = ["bundled"] }
 ignore = "0.4"
 notify = "6"
 petgraph = "0.6"
-tree-sitter = "0.22"
+tree-sitter = "0.25"
 # mcp = "0.4" — отключено: будет добавлено на этапе MCP (раздел 8 ТЗ)
 clap = { version = "4", features = ["derive"] }

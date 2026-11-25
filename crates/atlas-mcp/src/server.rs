@@ -90,10 +90,7 @@ impl McpServer {
         let params = msg.get("params").cloned().unwrap_or(Value::Null);
 
         // Нет id — уведомление (например, notifications/initialized): отвечать нельзя
-        let id = match id {
-            Some(id) => id,
-            None => return None,
-        };
+        let id = id?;
 
         let reply = match method {
             "initialize" => {

@@ -40,31 +40,35 @@ impl FileWatcher {
         Ok(())
     }
 
+    /// Возвращает следующее событие. Обрабатывает все накопившиеся события,
+    /// возвращая первое значимое (create/modify/delete/rename).
     pub fn next_event(&self) -> Option<WatchEvent> {
-        let event = self.rx.try_iter().last()?;
-        match event {
-            Ok(e) => {
-                match e.kind {
-                    EventKind::Create(_) => {
-                        for path in e.paths {
-                            return Some(WatchEvent::Created(path));
-                        }
+        for event in self.rx.try_iter() {
+            let Ok(e) = event else { continue };
+            match e.kind {
+                EventKind::Create(_) => {
+                    if let Some(p) = e.paths.first() {
+                        return Some(WatchEvent::Created(p.clone()));
                     }
-                    EventKind::Modify(_) => {
-                        for path in e.paths {
-                            return Some(WatchEvent::Modified(path));
-                        }
-                    }
-                    EventKind::Remove(_) => {
-                        for path in e.paths {
-                            return Some(WatchEvent::Deleted(path));
-                        }
-                    }
-                    _ => {}
                 }
-                None
+                EventKind::Modify(notify::event::ModifyKind::Name(notify::event::RenameMode::Both)) => {
+                    if e.paths.len() == 2 {
+                        return Some(WatchEvent::Renamed(e.paths[0].clone(), e.paths[1].clone()));
+                    }
+                }
+                EventKind::Modify(_) => {
+                    if let Some(p) = e.paths.first() {
+                        return Some(WatchEvent::Modified(p.clone()));
+                    }
+                }
+                EventKind::Remove(_) => {
+                    if let Some(p) = e.paths.first() {
+                        return Some(WatchEvent::Deleted(p.clone()));
+                    }
+                }
+                _ => {}
             }
-            Err(_) => None,
         }
+        None
     }
 }

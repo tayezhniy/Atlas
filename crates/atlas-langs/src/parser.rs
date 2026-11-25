@@ -32,6 +32,7 @@ pub enum SymbolKind {
     Interface,
     Constant,
     Type,
+    Field,
 }
 
 /// Видимость символа.

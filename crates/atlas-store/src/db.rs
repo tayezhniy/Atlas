@@ -16,11 +16,11 @@ impl Store {
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
         let conn = Connection::open(path)?;
         // Включаем WAL для mejores характеристик параллельного чтения
-        conn.pragma_update(None, "journal_mode", &"WAL")?;
-        conn.pragma_update(None, "synchronous", &"NORMAL")?;
-        conn.pragma_update(None, "foreign_keys", &"ON")?;
+        conn.pragma_update(None, "journal_mode", "WAL")?;
+        conn.pragma_update(None, "synchronous", "NORMAL")?;
+        conn.pragma_update(None, "foreign_keys", "ON")?;
         // Нужно, чтобы INSERT OR REPLACE удалял старую запись и из FTS-индекса
-        conn.pragma_update(None, "recursive_triggers", &"ON")?;
+        conn.pragma_update(None, "recursive_triggers", "ON")?;
 
         Self::run_migrations(&conn)?;
         Ok(Self { conn })
@@ -224,7 +224,7 @@ impl Store {
         })?;
         let mut nodes = Vec::new();
         for row in rows {
-            nodes.push(row.map_err(|e| StoreError::Sql(e))?);
+            nodes.push(row.map_err(StoreError::Sql)?);
         }
         Ok(nodes)
     }
@@ -234,7 +234,7 @@ impl Store {
         let mut stmt = self.conn.prepare(
             "SELECT src_id, dst_id, kind, confidence, weight FROM edge WHERE dst_id = ?1",
         )?;
-        let rows = stmt.query_map(params![dst_id.to_string()], |row| parse_edge(row))?;
+        let rows = stmt.query_map(params![dst_id.to_string()], parse_edge)?;
         let mut edges = Vec::new();
         for row in rows {
             edges.push(row?);
@@ -247,7 +247,7 @@ impl Store {
         let mut stmt = self.conn.prepare(
             "SELECT src_id, dst_id, kind, confidence, weight FROM edge WHERE src_id = ?1",
         )?;
-        let rows = stmt.query_map(params![src_id.to_string()], |row| parse_edge(row))?;
+        let rows = stmt.query_map(params![src_id.to_string()], parse_edge)?;
         let mut edges = Vec::new();
         for row in rows {
             edges.push(row?);
@@ -510,7 +510,7 @@ impl Store {
     }
 
     /// Начинает транзакцию для пакетной записи (используется индексатором).
-    pub fn transaction(&mut self) -> rusqlite::Result<rusqlite::Transaction> {
+    pub fn transaction(&mut self) -> rusqlite::Result<rusqlite::Transaction<'_>> {
         self.conn.transaction()
     }
 

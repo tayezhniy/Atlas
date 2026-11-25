@@ -1,0 +1,61 @@
+project,task_id,task_name,mode,run,tokens_in,tokens_out,calls,time_ms,correct,error
+small_rust,small_1,Найти определение UserService::create_user,without_atlas,0,0,1605,3,5,1,
+small_rust,small_1,Найти определение UserService::create_user,without_atlas,1,0,1605,3,3,1,
+small_rust,small_1,Найти определение UserService::create_user,with_atlas,0,0,0,1,1,1,метод не поддерживается: notifications/initialized
+small_rust,small_1,Найти определение UserService::create_user,with_atlas,1,0,405,3,4,1,
+small_rust,small_2,Найти все вызовы Config::from_env,without_atlas,0,0,292,2,6,1,
+small_rust,small_2,Найти все вызовы Config::from_env,without_atlas,1,0,292,2,5,1,
+small_rust,small_2,Найти все вызовы Config::from_env,with_atlas,0,0,0,1,1,1,метод не поддерживается: notifications/initialized
+small_rust,small_2,Найти все вызовы Config::from_env,with_atlas,1,0,64,2,2,1,
+small_rust,small_3,Найти импорты serde,without_atlas,0,0,108,2,2,1,
+small_rust,small_3,Найти импорты serde,without_atlas,1,0,108,2,2,1,
+small_rust,small_3,Найти импорты serde,with_atlas,0,0,0,1,0,1,метод не поддерживается: notifications/initialized
+small_rust,small_3,Найти импорты serde,with_atlas,1,0,76,2,0,1,
+small_rust,small_4,Оценить влияние изменения OrderService::create_order,without_atlas,0,0,176,2,7,1,
+small_rust,small_4,Оценить влияние изменения OrderService::create_order,without_atlas,1,0,176,2,5,1,
+small_rust,small_4,Оценить влияние изменения OrderService::create_order,with_atlas,0,0,0,1,1,1,метод не поддерживается: notifications/initialized
+small_rust,small_4,Оценить влияние изменения OrderService::create_order,with_atlas,1,0,346,2,2,1,
+small_rust,small_5,Найти тесты для UserService,without_atlas,0,0,652,2,2,1,
+small_rust,small_5,Найти тесты для UserService,without_atlas,1,0,652,2,2,1,
+small_rust,small_5,Найти тесты для UserService,with_atlas,0,0,0,1,0,1,метод не поддерживается: notifications/initialized
+small_rust,small_5,Найти тесты для UserService,with_atlas,1,0,84,2,0,1,
+medium_python,medium_1,Найти определение AuthService::authenticate,without_atlas,0,0,668,3,4,1,
+medium_python,medium_1,Найти определение AuthService::authenticate,without_atlas,1,0,668,3,4,1,
+medium_python,medium_1,Найти определение AuthService::authenticate,with_atlas,0,0,0,1,1,1,метод не поддерживается: notifications/initialized
+medium_python,medium_1,Найти определение AuthService::authenticate,with_atlas,1,0,235,3,3,1,
+medium_python,medium_2,Найти все места использования User модели,without_atlas,0,0,803,2,6,1,
+medium_python,medium_2,Найти все места использования User модели,without_atlas,1,0,803,2,7,1,
+medium_python,medium_2,Найти все места использования User модели,with_atlas,0,0,0,1,1,1,метод не поддерживается: notifications/initialized
+medium_python,medium_2,Найти все места использования User модели,with_atlas,1,0,116,2,2,1,
+medium_python,medium_3,Найти API маршруты для orders,without_atlas,0,0,236,2,2,1,
+medium_python,medium_3,Найти API маршруты для orders,without_atlas,1,0,236,2,2,1,
+medium_python,medium_3,Найти API маршруты для orders,with_atlas,0,0,0,1,0,1,метод не поддерживается: notifications/initialized
+medium_python,medium_3,Найти API маршруты для orders,with_atlas,1,0,176,2,0,1,
+medium_python,medium_4,Оценить влияние изменения ProductService::create_product,without_atlas,0,0,94,2,6,1,
+medium_python,medium_4,Оценить влияние изменения ProductService::create_product,without_atlas,1,0,94,2,7,1,
+medium_python,medium_4,Оценить влияние изменения ProductService::create_product,with_atlas,0,0,0,1,1,1,метод не поддерживается: notifications/initialized
+medium_python,medium_4,Оценить влияние изменения ProductService::create_product,with_atlas,1,0,342,2,2,1,
+medium_python,medium_5,Найти тесты для OrderService,without_atlas,0,0,95,2,2,1,
+medium_python,medium_5,Найти тесты для OrderService,without_atlas,1,0,95,2,2,1,
+medium_python,medium_5,Найти тесты для OrderService,with_atlas,0,0,0,1,0,1,метод не поддерживается: notifications/initialized
+medium_python,medium_5,Найти тесты для OrderService,with_atlas,1,0,64,2,0,1,
+large_multi,large_1,Найти все сервисы в домене billing,without_atlas,0,0,908,2,9,1,
+large_multi,large_1,Найти все сервисы в домене billing,without_atlas,1,0,908,2,9,1,
+large_multi,large_1,Найти все сервисы в домене billing,with_atlas,0,0,0,1,0,1,метод не поддерживается: notifications/initialized
+large_multi,large_1,Найти все сервисы в домене billing,with_atlas,1,0,1050,2,4,1,
+large_multi,large_2,Найти вызовы process_billing между файлами,without_atlas,0,0,0,2,15,0,
+large_multi,large_2,Найти вызовы process_billing между файлами,without_atlas,1,0,0,2,15,0,
+large_multi,large_2,Найти вызовы process_billing между файлами,with_atlas,0,0,0,1,4,0,метод не поддерживается: notifications/initialized
+large_multi,large_2,Найти вызовы process_billing между файлами,with_atlas,1,0,80,2,5,0,
+large_multi,large_3,Оценить влияние изменения OrderService в orders домене,without_atlas,0,0,0,2,15,0,
+large_multi,large_3,Оценить влияние изменения OrderService в orders домене,without_atlas,1,0,0,2,15,0,
+large_multi,large_3,Оценить влияние изменения OrderService в orders домене,with_atlas,0,0,0,1,4,0,метод не поддерживается: notifications/initialized
+large_multi,large_3,Оценить влияние изменения OrderService в orders домене,with_atlas,1,0,24,2,5,0,
+large_multi,large_4,Найти циклические зависимости между доменами,without_atlas,0,0,750,2,9,1,
+large_multi,large_4,Найти циклические зависимости между доменами,without_atlas,1,0,750,2,9,1,
+large_multi,large_4,Найти циклические зависимости между доменами,with_atlas,0,0,0,1,0,1,метод не поддерживается: notifications/initialized
+large_multi,large_4,Найти циклические зависимости между доменами,with_atlas,1,0,1566,2,29,1,
+large_multi,large_5,Найти хабы - модули с наибольшим числом входящих связей,without_atlas,0,0,750,2,3,1,
+large_multi,large_5,Найти хабы - модули с наибольшим числом входящих связей,without_atlas,1,0,750,2,3,1,
+large_multi,large_5,Найти хабы - модули с наибольшим числом входящих связей,with_atlas,0,0,0,1,0,1,метод не поддерживается: notifications/initialized
+large_multi,large_5,Найти хабы - модули с наибольшим числом входящих связей,with_atlas,1,0,180,2,1,1,
