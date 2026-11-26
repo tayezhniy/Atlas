@@ -1,3 +1,4 @@
+mod extra_symbols;
 pub mod parser;
 pub mod queries;
 pub mod tree_sitter_parser;

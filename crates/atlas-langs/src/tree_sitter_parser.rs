@@ -82,6 +82,16 @@ impl TreeSitterParser {
             .ok_or_else(|| anyhow::anyhow!("unsupported language for file: {}", path))?;
 
         self.set_language(lang_name)?;
+        // JSX разбирает только грамматика TSX, а `.mli` — своя грамматика интерфейсов
+        match Path::new(path).extension().and_then(|e| e.to_str()) {
+            Some("tsx" | "jsx" | "js") => self
+                .parser
+                .set_language(&tree_sitter_typescript::LANGUAGE_TSX.into())?,
+            Some("mli") => self
+                .parser
+                .set_language(&tree_sitter_ocaml::LANGUAGE_OCAML_INTERFACE.into())?,
+            _ => {}
+        }
 
         let tree = self
             .parser
@@ -144,18 +154,13 @@ fn extract_symbols(
         "go" => extract_symbols_go(node, source),
         "java" => extract_symbols_java(node, source),
         "c_sharp" => extract_symbols_csharp(node, source),
-        "c" | "cpp" => extract_symbols_c_cpp(node, source, lang),
-        "dart" => extract_symbols_dart(node, source),
+        "c" | "cpp" | "dart" | "kotlin" | "elixir" | "haskell" | "ocaml" | "graphql" | "sql" => {
+            Ok(crate::extra_symbols::extract(node, source, lang))
+        }
         "swift" => extract_symbols_swift(node, source),
-        "kotlin" => extract_symbols_kotlin(node, source),
         "lua" => extract_symbols_lua(node, source),
         "zig" => extract_symbols_zig(node, source),
-        "elixir" => extract_symbols_elixir(node, source),
-        "haskell" => extract_symbols_haskell(node, source),
-        "ocaml" => extract_symbols_ocaml(node, source),
         "prisma" => extract_symbols_prisma(node, source),
-        "graphql" => extract_symbols_graphql(node, source),
-        "sql" => extract_symbols_sql(node, source),
         _ => Ok(vec![]),
     }
 }
@@ -332,55 +337,6 @@ fn extract_symbols_csharp(node: &tree_sitter::Node, source: &[u8]) -> Result<Vec
 
 // ===== Новые языки =====
 
-fn extract_symbols_c_cpp(node: &tree_sitter::Node, source: &[u8], lang: &str) -> Result<Vec<Symbol>> {
-    let mut symbols = Vec::new();
-    let types = if lang == "c" {
-        &[
-            "function_definition",
-            "struct_specifier",
-            "union_specifier",
-            "enum_specifier",
-            "type_definition",
-            "declaration",
-        ] as &[&str]
-    } else {
-        &[
-            "function_definition",
-            "class_specifier",
-            "struct_specifier",
-            "union_specifier",
-            "enum_specifier",
-            "type_definition",
-            "declaration",
-            "template_declaration",
-            "namespace_definition",
-        ] as &[&str]
-    };
-    collect_symbols_by_type(node, source, types, &mut symbols, lang)?;
-    Ok(symbols)
-}
-
-fn extract_symbols_dart(node: &tree_sitter::Node, source: &[u8]) -> Result<Vec<Symbol>> {
-    let mut symbols = Vec::new();
-    collect_symbols_by_type(
-        node,
-        source,
-        &[
-            "function_declaration",
-            "method_declaration",
-            "class_declaration",
-            "enum_declaration",
-            "mixin_declaration",
-            "extension_declaration",
-            "type_alias_declaration",
-            "top_level_variable_declaration",
-        ],
-        &mut symbols,
-        "dart",
-    )?;
-    Ok(symbols)
-}
-
 fn extract_symbols_swift(node: &tree_sitter::Node, source: &[u8]) -> Result<Vec<Symbol>> {
     let mut symbols = Vec::new();
     collect_symbols_by_type(
@@ -399,27 +355,6 @@ fn extract_symbols_swift(node: &tree_sitter::Node, source: &[u8]) -> Result<Vec<
         ],
         &mut symbols,
         "swift",
-    )?;
-    Ok(symbols)
-}
-
-fn extract_symbols_kotlin(node: &tree_sitter::Node, source: &[u8]) -> Result<Vec<Symbol>> {
-    let mut symbols = Vec::new();
-    collect_symbols_by_type(
-        node,
-        source,
-        &[
-            "function_declaration",
-            "class_declaration",
-            "interface_declaration",
-            "object_declaration",
-            "enum_declaration",
-            "data_class_declaration",
-            "type_alias",
-            "property_declaration",
-        ],
-        &mut symbols,
-        "kotlin",
     )?;
     Ok(symbols)
 }
@@ -460,61 +395,6 @@ fn extract_symbols_zig(node: &tree_sitter::Node, source: &[u8]) -> Result<Vec<Sy
     Ok(symbols)
 }
 
-fn extract_symbols_elixir(node: &tree_sitter::Node, source: &[u8]) -> Result<Vec<Symbol>> {
-    let mut symbols = Vec::new();
-    collect_symbols_by_type(
-        node,
-        source,
-        &[
-            "function_declaration",
-            "module_declaration",
-            "macro_declaration",
-            "struct_declaration",
-            "protocol_declaration",
-        ],
-        &mut symbols,
-        "elixir",
-    )?;
-    Ok(symbols)
-}
-
-fn extract_symbols_haskell(node: &tree_sitter::Node, source: &[u8]) -> Result<Vec<Symbol>> {
-    let mut symbols = Vec::new();
-    collect_symbols_by_type(
-        node,
-        source,
-        &[
-            "function_declaration",
-            "data_declaration",
-            "type_declaration",
-            "class_declaration",
-            "instance_declaration",
-            "newtype_declaration",
-        ],
-        &mut symbols,
-        "haskell",
-    )?;
-    Ok(symbols)
-}
-
-fn extract_symbols_ocaml(node: &tree_sitter::Node, source: &[u8]) -> Result<Vec<Symbol>> {
-    let mut symbols = Vec::new();
-    collect_symbols_by_type(
-        node,
-        source,
-        &[
-            "let_binding",
-            "function_declaration",
-            "type_declaration",
-            "module_declaration",
-            "class_declaration",
-        ],
-        &mut symbols,
-        "ocaml",
-    )?;
-    Ok(symbols)
-}
-
 fn extract_symbols_prisma(node: &tree_sitter::Node, source: &[u8]) -> Result<Vec<Symbol>> {
     let mut symbols = Vec::new();
     collect_symbols_by_type(
@@ -527,43 +407,6 @@ fn extract_symbols_prisma(node: &tree_sitter::Node, source: &[u8]) -> Result<Vec
         ],
         &mut symbols,
         "prisma",
-    )?;
-    Ok(symbols)
-}
-
-fn extract_symbols_graphql(node: &tree_sitter::Node, source: &[u8]) -> Result<Vec<Symbol>> {
-    let mut symbols = Vec::new();
-    collect_symbols_by_type(
-        node,
-        source,
-        &[
-            "object_type_definition",
-            "interface_type_definition",
-            "enum_type_definition",
-            "input_type_definition",
-            "field_definition",
-            "directive_definition",
-        ],
-        &mut symbols,
-        "graphql",
-    )?;
-    Ok(symbols)
-}
-
-fn extract_symbols_sql(node: &tree_sitter::Node, source: &[u8]) -> Result<Vec<Symbol>> {
-    let mut symbols = Vec::new();
-    collect_symbols_by_type(
-        node,
-        source,
-        &[
-            "create_table_statement",
-            "create_view_statement",
-            "create_function_statement",
-            "create_procedure_statement",
-            "function_definition",
-        ],
-        &mut symbols,
-        "sql",
     )?;
     Ok(symbols)
 }
@@ -667,7 +510,7 @@ fn utf8_byte_index(source: &[u8], row: usize, column: usize) -> usize {
 }
 
 /// Извлекает сигнатуру символа (первая строка узла).
-fn extract_signature(node: &tree_sitter::Node, source: &[u8]) -> Option<String> {
+pub(crate) fn extract_signature(node: &tree_sitter::Node, source: &[u8]) -> Option<String> {
     let range = node.range();
     let start = utf8_byte_index(source, range.start_point.row, range.start_point.column);
     let end_of_line = source[start..]
@@ -685,7 +528,7 @@ fn extract_signature(node: &tree_sitter::Node, source: &[u8]) -> Option<String> 
 }
 
 /// Извлекает doc-комментарий: docstring Python или комментарии непосредственно перед узлом.
-fn extract_doc_comment(node: &tree_sitter::Node, source: &[u8]) -> Option<String> {
+pub(crate) fn extract_doc_comment(node: &tree_sitter::Node, source: &[u8]) -> Option<String> {
     if let Some(doc) = python_docstring(node, source) {
         return Some(doc);
     }
@@ -780,7 +623,7 @@ fn clean_doc_text(text: &str) -> String {
 }
 
 /// Извлекает видимость символа.
-fn extract_visibility(node: &tree_sitter::Node, source: &[u8], lang: &str) -> Visibility {
+pub(crate) fn extract_visibility(node: &tree_sitter::Node, source: &[u8], lang: &str) -> Visibility {
     let first_line = extract_signature(node, source).unwrap_or_default();
     match lang {
         "rust" => {
@@ -818,7 +661,7 @@ fn extract_visibility(node: &tree_sitter::Node, source: &[u8], lang: &str) -> Vi
         }
         "go" => {
             let name = extract_name(node, source, lang).unwrap_or_default();
-            if name[..1].to_uppercase() == name[..1] {
+            if name.chars().next().is_some_and(char::is_uppercase) {
                 Visibility::Public
             } else {
                 Visibility::Private

@@ -178,3 +178,19 @@ fn call_stats_report_linked_and_unresolved() {
     assert_eq!(stats.calls_linked + stats.calls_unresolved, stats.calls_extracted, "{stats:?}");
     assert!(stats.calls_linked > 0, "{stats:?}");
 }
+
+#[test]
+fn outdated_parser_version_reparses_unchanged_files() {
+    let (dir, root) = project();
+    let mut store = Store::open(dir.path().join(".atlas-test.db")).unwrap();
+    index(&mut store, &root);
+    let before = edges(&store);
+    assert_eq!(index(&mut store, &root).files_indexed, 0);
+
+    store.conn().execute("UPDATE project SET parser_version = 2", []).unwrap();
+    let stats = index(&mut store, &root);
+    assert_eq!(stats.errors, 0, "{stats:?}");
+    assert_eq!(stats.files_indexed, 3, "{stats:?}");
+    assert_eq!(edges(&store), before);
+    assert_eq!(index(&mut store, &root).files_indexed, 0);
+}

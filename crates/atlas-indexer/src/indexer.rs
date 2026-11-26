@@ -72,6 +72,9 @@ struct PendingImport {
     target: String,
 }
 
+/// Увеличивается, когда меняется извлечение символов: старый индекс перечитывается целиком.
+const PARSER_VERSION: i64 = 3;
+
 impl<'a> ProjectIndexer<'a> {
     pub fn new(store: &'a mut Store, root_path: &str) -> Self {
         Self {
@@ -198,6 +201,7 @@ impl<'a> ProjectIndexer<'a> {
         }
         
         self.upsert_project_record()?;
+        self.drop_outdated_index()?;
         self.preload_maps()?;
 
         let options = crate::walker::WalkOptions {
@@ -217,6 +221,11 @@ impl<'a> ProjectIndexer<'a> {
 
         self.delete_missing_files(&files)?;
         self.finish()?;
+        // только после полного обхода: частичное обновление версию не меняет
+        self.store.conn().execute(
+            "UPDATE project SET parser_version = ?1 WHERE root_path = ?2",
+            params![PARSER_VERSION, self.root_path],
+        )?;
 
         // LSP-расширение: улучшаем граф вызовов через call hierarchy
         if self.lsp_client.is_some() {
@@ -266,6 +275,22 @@ impl<'a> ProjectIndexer<'a> {
         Ok(self.stats.clone())
     }
 
+    /// Забывает файлы, разобранные прежней версией парсеров: их хеш не изменился,
+    /// и без этого они не были бы прочитаны заново.
+    fn drop_outdated_index(&mut self) -> Result<()> {
+        let version: i64 = self.store.conn().query_row(
+            "SELECT parser_version FROM project WHERE root_path = ?1",
+            params![self.root_path],
+            |row| row.get(0),
+        )?;
+        if version != PARSER_VERSION {
+            for node in self.store.file_nodes()? {
+                self.store.delete_nodes_by_path(&node.path)?;
+            }
+        }
+        Ok(())
+    }
+
     fn preload_maps(&mut self) -> Result<()> {
         self.file_node_ids.clear();
         self.symbol_node_ids.clear();
@@ -283,7 +308,7 @@ impl<'a> ProjectIndexer<'a> {
         self.resolve_pending()?;
         atlas_core::ranking::recompute_ranks(self.store)?;
         self.store.conn().execute(
-            "UPDATE project SET last_indexed_at = ?1, schema_version = 2, parser_version = 2
+            "UPDATE project SET last_indexed_at = ?1, schema_version = 2
              WHERE root_path = ?2",
             params![Utc::now().to_rfc3339(), self.root_path],
         )?;
@@ -566,7 +591,8 @@ impl<'a> ProjectIndexer<'a> {
         let project_id = existing.unwrap_or_else(|| Uuid::new_v4().to_string());
         self.store.conn().execute(
             "INSERT OR REPLACE INTO project (id, root_path, schema_version, parser_version, last_indexed_at, name, created_at)
-             VALUES (?1, ?2, 2, 2, ?3, ?4, COALESCE((SELECT created_at FROM project WHERE id = ?1), ?3))",
+             VALUES (?1, ?2, 2, COALESCE((SELECT parser_version FROM project WHERE id = ?1), ?5), ?3, ?4,
+                     COALESCE((SELECT created_at FROM project WHERE id = ?1), ?3))",
             params![
                 project_id,
                 &self.root_path,
@@ -575,6 +601,7 @@ impl<'a> ProjectIndexer<'a> {
                     .file_name()
                     .unwrap_or_default()
                     .to_string_lossy(),
+                PARSER_VERSION,
             ],
         )?;
         Ok(())
