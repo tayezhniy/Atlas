@@ -248,6 +248,19 @@ impl ToolRegistry {
         })
     }
 
+    /// Тело ответа `overview` с маскированием, без записи в журнал (для интерфейса).
+    pub(crate) fn overview_text(&self, project_root: &str) -> Result<String> {
+        let ctx = ToolContext::new(
+            "ui".into(),
+            Tool::Overview,
+            0,
+            project_root.into(),
+            HashMap::new(),
+            Vec::new(),
+        );
+        Ok(mask_text(&self.overview(&ctx)?.0))
+    }
+
     // --- overview: карта проекта (L0) или каталога (L1) ---
 
     fn overview(&self, ctx: &ToolContext) -> Result<Body> {

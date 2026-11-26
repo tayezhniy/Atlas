@@ -2,50 +2,33 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Тёмная тема по макету */
 @layer base {
   :root {
-    --background: 0 0% 100%;
-    --foreground: 222.2 84% 4.9%;
-    --muted: 210 40% 96.1%;
-    --muted-foreground: 215.4 16.3% 46.9%;
-    --accent: 210 40% 96.1%;
-    --accent-foreground: 222.2 47.4% 11.2%;
-    --popover: 0 0% 100%;
-    --popover-foreground: 222.2 84% 4.9%;
-    --card: 0 0% 100%;
-    --card-foreground: 222.2 84% 4.9%;
-    --border: 214.3 31.8% 91.4%;
-    --input: 214.3 31.8% 91.4%;
-    --primary: 221.2 83.2% 53.3%;
-    --primary-foreground: 210 40% 98%;
-    --secondary: 210 40% 96.1%;
-    --secondary-foreground: 222.2 47.4% 11.2%;
-    --destructive: 0 84.2% 60.2%;
-    --destructive-foreground: 210 40% 98%;
-    --warning: 47.9 95.8% 53.1%;
+    color-scheme: dark;
+    --background: 252 11% 11%;
+    --foreground: 249 14% 90%;
+    --muted: 252 7% 17%;
+    --muted-foreground: 249 7% 63%;
+    --accent: 252 12% 22%;
+    --accent-foreground: 258 80% 80%;
+    --popover: 252 8% 14%;
+    --popover-foreground: 249 14% 90%;
+    --card: 252 8% 14%;
+    --card-foreground: 249 14% 90%;
+    --panel: 252 8% 14%;
+    --rail: 252 12% 11%;
+    --border: 253 7% 21%;
+    --input: 252 11% 11%;
+    --ring: 258 55% 70%;
+    --primary: 258 55% 70%;
+    --primary-foreground: 252 20% 10%;
+    --secondary: 252 7% 17%;
+    --secondary-foreground: 249 14% 90%;
+    --destructive: 0 60% 55%;
+    --destructive-foreground: 0 0% 98%;
+    --warning: 42 45% 60%;
     --radius: 0.5rem;
-  }
-
-  .dark {
-    --background: 222.2 84% 4.9%;
-    --foreground: 210 40% 98%;
-    --muted: 217.2 32.6% 17.5%;
-    --muted-foreground: 215 20.2% 65.1%;
-    --accent: 217.2 32.6% 17.5%;
-    --accent-foreground: 210 40% 98%;
-    --popover: 222.2 84% 4.9%;
-    --popover-foreground: 210 40% 98%;
-    --card: 222.2 84% 4.9%;
-    --card-foreground: 210 40% 98%;
-    --border: 217.2 32.6% 17.5%;
-    --input: 217.2 32.6% 17.5%;
-    --primary: 221.2 83.2% 53.3%;
-    --primary-foreground: 210 40% 98%;
-    --secondary: 217.2 32.6% 17.5%;
-    --secondary-foreground: 210 40% 98%;
-    --destructive: 0 62.8% 30.6%;
-    --destructive-foreground: 210 40% 98%;
-    --warning: 47.9 95.8% 53.1%;
   }
 }
 
@@ -100,28 +83,28 @@
     background-color: hsl(262.1 83.3% 57.8%);
   }
   .bg-blue-50 {
-    background-color: hsl(221.2 83.2% 95%);
+    background-color: hsl(210 30% 20%);
   }
   .bg-green-50 {
-    background-color: hsl(142.1 70.6% 95%);
+    background-color: hsl(145 22% 18%);
   }
   .text-blue-500 {
     color: hsl(221.2 83.2% 53.3%);
   }
   .text-blue-600 {
-    color: hsl(221.2 83.2% 45.3%);
+    color: hsl(205 45% 68%);
   }
   .text-blue-700 {
-    color: hsl(221.2 83.2% 35.3%);
+    color: hsl(205 45% 72%);
   }
   .text-green-500 {
     color: hsl(142.1 70.6% 45.3%);
   }
   .text-green-600 {
-    color: hsl(142.1 70.6% 35.3%);
+    color: hsl(145 30% 65%);
   }
   .text-green-700 {
-    color: hsl(142.1 70.6% 25.3%);
+    color: hsl(145 30% 68%);
   }
   .text-red-500 {
     color: hsl(0 84.2% 60.2%);
@@ -151,13 +134,13 @@
     border-color: hsla(0 84.2% 60.2% / 0.2);
   }
   .bg-red-50 {
-    background-color: hsl(0 84.2% 95%);
+    background-color: hsl(0 30% 18%);
   }
   .border-red-200 {
-    border-color: hsl(0 84.2% 80%);
+    border-color: hsl(0 35% 32%);
   }
   .text-red-700 {
-    color: hsl(0 84.2% 30%);
+    color: hsl(0 70% 75%);
   }
   .text-yellow-500 {
     color: hsl(47.9 95.8% 53.1%);
@@ -262,3 +245,10 @@
 ::selection {
   background-color: hsl(var(--primary) / 0.2);
 }
+html, body, #app { height: 100%; margin: 0; }
+body {
+  font-family: Inter, -apple-system, "Segoe UI", Roboto, "Noto Sans", sans-serif;
+  font-size: 13px;
+}
+input, select { color: inherit; }
+.cm-editor, .cm-editor .cm-gutters { background-color: #17161b !important; }

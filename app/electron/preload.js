@@ -13,6 +13,8 @@ contextBridge.exposeInMainWorld('atlasAPI', {
   doctor: invoke('doctor'),
   overview: invoke('overview'),
   status: invoke('status'),
+  map: invoke('map'),
+  appInfo: invoke('app-info'),
   search: invoke('search'),
   outline: invoke('outline'),
   read: invoke('read'),

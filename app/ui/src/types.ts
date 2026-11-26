@@ -94,6 +94,12 @@ export interface ReportData {
   token_usage: { calls: number; tokens_out: number }
 }
 
+export interface ProjectMap {
+  tokens: number
+  full_tokens: number
+  text: string
+}
+
 declare global {
   interface Window {
     atlasAPI: {
@@ -106,6 +112,8 @@ declare global {
       doctor: (projectPath: string) => Promise<{ ok: boolean; output: string }>
       overview: (projectPath: string) => Promise<ProjectOverview>
       status: (projectPath: string) => Promise<IndexStatus>
+      map: (projectPath: string) => Promise<ProjectMap>
+      appInfo: (projectPath: string) => Promise<{ branch: string | null }>
       search: (args: { projectPath: string; query: string; limit?: number }) => Promise<{
         query: string
         total: number

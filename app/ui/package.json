@@ -26,8 +26,7 @@
     "graphology-layout-forceatlas2": "^0.10",
     "lucide-react": "^0.300",
     "react": "^18",
-    "react-dom": "^18",
-    "sigma": "^2.3"
+    "react-dom": "^18"
   },
   "devDependencies": {
     "@types/react": "^18",

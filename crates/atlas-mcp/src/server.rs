@@ -300,6 +300,17 @@ mod tests {
     }
 
     #[test]
+    fn ui_map_is_not_logged_as_ai_call() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().join("test.db")).unwrap();
+        let registry = ToolRegistry::new(store);
+        let map = registry.ui("/test/project", "map", &json!({})).unwrap();
+        assert!(map["text"].as_str().unwrap().contains("Карта проекта"));
+        let status = registry.ui("/test/project", "status", &json!({})).unwrap();
+        assert_eq!(status["calls"]["recent"].as_array().unwrap().len(), 0);
+    }
+
+    #[test]
     fn ui_method_returns_structured_data() {
         let (_d, mut s) = server();
         let r = call(

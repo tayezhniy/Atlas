@@ -1,521 +1,359 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import {
-  LayoutDashboard,
-  FileText,
-  Activity,
-  BarChart2,
-  Search,
-  Settings,
-  Zap,
-  Copy,
-  ExternalLink,
-  Play,
-  RefreshCw,
-  Folder,
-  AlertCircle,
-  CheckCircle,
-  X,
-  File,
-  ChevronLeft,
-  ChevronRight,
+  Check, ChevronDown, FileText, Folder, GitBranch, Layers, PanelLeft, PanelRight, Plus,
+  RefreshCw, Search, Settings, ShieldCheck, TerminalSquare, Waypoints, X,
 } from 'lucide-react'
 import FileTree from './components/FileTree'
 import Graph from './components/Graph'
 import FileView from './components/FileView'
 import Inspector from './components/Inspector'
+import ContextPanel from './components/ContextPanel'
 import TokenPanel from './components/TokenPanel'
 import CommandPalette from './components/CommandPalette'
 import SettingsPanel from './components/Settings'
 import ReportExport from './components/ReportExport'
-import type { GraphNode, ProjectOverview } from './types'
+import { fileName, formatNumber, timeAgo } from './lib'
+import type { IndexStatus, ProjectOverview } from './types'
+
+type PaletteMode = 'files' | 'symbols' | 'commands'
+const GRAPH = 'graph'
+const ACTIVITY = 'activity'
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<'graph' | 'file' | 'map' | 'report'>('graph')
-  const [selectedNode, setSelectedNode] = useState<string | null>(null)
-  const [sidebarOpen, setSidebarOpen] = useState(true)
-  const [rightSidebarOpen, setRightSidebarOpen] = useState(true)
   const [projects, setProjects] = useState<string[]>([])
-  const [activeProject, setActiveProject] = useState<string | null>(null)
-  const [indexing, setIndexing] = useState(false)
+  const [project, setProject] = useState<string | null>(null)
   const [overview, setOverview] = useState<ProjectOverview | null>(null)
-  const [graphNodes, setGraphNodes] = useState<GraphNode[]>([])
-  const [graphEdges, setGraphEdges] = useState<ProjectOverview['edges']>([])
+  const [status, setStatus] = useState<IndexStatus | null>(null)
+  const [branch, setBranch] = useState<string | null>(null)
+  const [version, setVersion] = useState(0)
+  const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [status, setStatus] = useState<'idle' | 'indexing' | 'ready' | 'error'>('idle')
-  const [recentFiles, setRecentFiles] = useState<string[]>([])
-
-  // Модальные окна
-  const [commandPaletteOpen, setCommandPaletteOpen] = useState(false)
-  const [paletteMode, setPaletteMode] = useState<'files' | 'symbols' | 'commands'>('files')
+  const [selected, setSelected] = useState<string | null>(null)
+  const [openFiles, setOpenFiles] = useState<string[]>([])
+  /** GRAPH, ACTIVITY или открытый `путь[::имя]` */
+  const [tab, setTab] = useState<string>(GRAPH)
+  const [graphMode, setGraphMode] = useState<'graph' | 'list'>('graph')
+  const [leftOpen, setLeftOpen] = useState(true)
+  const [rightOpen, setRightOpen] = useState(true)
+  const [palette, setPalette] = useState<PaletteMode | null>(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
-  const [reportExportOpen, setReportExportOpen] = useState(false)
+  const [reportOpen, setReportOpen] = useState(false)
   const [reportFormat, setReportFormat] = useState<'json' | 'markdown'>('markdown')
 
-  const tabs = [
-    { id: 'graph' as const, label: 'Граф', icon: <Activity className="w-4 h-4" /> },
-    { id: 'file' as const, label: 'Файл', icon: <FileText className="w-4 h-4" /> },
-    { id: 'map' as const, label: 'Карта', icon: <LayoutDashboard className="w-4 h-4" /> },
-    { id: 'report' as const, label: 'Отчёт', icon: <BarChart2 className="w-4 h-4" /> },
-  ]
+  const projectName = project ? fileName(project) : ''
+  const nodes = overview?.top ?? []
+  const edges = overview?.edges ?? []
 
-  // Проверка жизнеспособности API при монтировании
-  useEffect(() => {
-    if (!window.atlasAPI) return
-    window.atlasAPI.ping().then(() => setStatus('ready')).catch(() => setStatus('error'))
-
-    // Глобальные хоткеи
-    const handleKeyDown = (e: KeyboardEvent) => {
-      // Ctrl+P - поиск файлов
-      if ((e.ctrlKey || e.metaKey) && e.key === 'p' && !e.shiftKey) {
-        e.preventDefault()
-        setPaletteMode('files')
-        setCommandPaletteOpen(true)
-      }
-      // Ctrl+Shift+F - поиск символов
-      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 'f') {
-        e.preventDefault()
-        setPaletteMode('symbols')
-        setCommandPaletteOpen(true)
-      }
-      // Ctrl+K - команды
-      if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
-        e.preventDefault()
-        setPaletteMode('commands')
-        setCommandPaletteOpen(true)
-      }
-      // Ctrl+, - настройки
-      if ((e.ctrlKey || e.metaKey) && e.key === ',') {
-        e.preventDefault()
-        setSettingsOpen(true)
-      }
-      // Ctrl+B - переключение левой боковой панели
-      if ((e.ctrlKey || e.metaKey) && e.key === 'b') {
-        e.preventDefault()
-        setSidebarOpen(v => !v)
-      }
-      // Ctrl+Shift+B - переключение правой боковой панели
-      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 'b') {
-        e.preventDefault()
-        setRightSidebarOpen(v => !v)
-      }
-      // Escape - закрыть модалки
-      if (e.key === 'Escape') {
-        setCommandPaletteOpen(false)
-        setSettingsOpen(false)
-        setReportExportOpen(false)
-      }
-    }
-    window.addEventListener('keydown', handleKeyDown)
-    return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [])
-
-  const loadOverview = useCallback(async (projectPath: string) => {
-    const ov = await window.atlasAPI.overview(projectPath)
+  const refresh = useCallback(async (path: string) => {
+    const [ov, st, info] = await Promise.all([
+      window.atlasAPI.overview(path),
+      window.atlasAPI.status(path),
+      window.atlasAPI.appInfo(path),
+    ])
     setOverview(ov)
-    setGraphNodes(ov.top)
-    setGraphEdges(ov.edges)
+    setStatus(st)
+    setBranch(info.branch)
+    setVersion((v) => v + 1)
+    return ov
   }, [])
 
-  const handleOpenProject = useCallback(async (projectPath: string) => {
-    if (!window.atlasAPI) return
+  const openProject = useCallback(async (path: string) => {
+    setBusy(true)
     setError(null)
-    setStatus('indexing')
-    setSelectedNode(null)
     try {
-      await window.atlasAPI.openProject(projectPath)
-      setProjects(prev => (prev.includes(projectPath) ? prev : [...prev, projectPath]))
-      setActiveProject(projectPath)
-      await loadOverview(projectPath)
-      setStatus('ready')
-      setRecentFiles([])
+      await window.atlasAPI.openProject(path)
+      setProjects((prev) => (prev.includes(path) ? prev : [...prev, path]))
+      setProject(path)
+      setOverview(null)
+      setSelected(null)
+      setOpenFiles([])
+      setTab(GRAPH)
+      const ov = await refresh(path)
+      // сразу показываем окрестность самого связанного файла
+      const linked = new Set(ov.edges.flatMap((e) => [e.source, e.target]))
+      setSelected((ov.top.find((n) => linked.has(n.id)) ?? ov.top[0])?.path ?? null)
     } catch (err: any) {
       setError(err.message || 'Не удалось открыть проект')
-      setStatus('error')
+    } finally {
+      setBusy(false)
     }
-  }, [loadOverview])
+  }, [refresh])
 
-  const handleChooseProject = useCallback(async () => {
+  const chooseProject = useCallback(async () => {
     const path = await window.atlasAPI?.chooseProject()
-    if (path) await handleOpenProject(path)
-  }, [handleOpenProject])
+    if (path) await openProject(path)
+  }, [openProject])
 
-  const handleIndexProject = useCallback(async () => {
-    if (!activeProject || !window.atlasAPI) return
-    setIndexing(true)
+  const reindex = useCallback(async () => {
+    if (!project) return
+    setBusy(true)
     setError(null)
     try {
-      await window.atlasAPI.indexProject(activeProject)
-      await loadOverview(activeProject)
-      setStatus('ready')
+      await window.atlasAPI.indexProject(project)
+      await refresh(project)
     } catch (err: any) {
       setError(err.message || 'Ошибка индексации')
-      setStatus('error')
     } finally {
-      setIndexing(false)
+      setBusy(false)
     }
-  }, [activeProject, loadOverview])
+  }, [project, refresh])
 
-  const handleNodeSelect = useCallback((nodeId: string) => {
-    setSelectedNode(nodeId)
-    setRecentFiles(prev => [nodeId.split('::')[0], ...prev.filter(p => p !== nodeId.split('::')[0])].slice(0, 10))
-    setActiveTab('file')
+  const openFile = useCallback((target: string) => {
+    const path = target.split('::')[0]
+    setSelected(target)
+    setOpenFiles((prev) => (prev.includes(path) ? prev : [...prev, path]))
+    setTab(target)
   }, [])
 
-  const handleGraphHighlight = useCallback((nodeId: string) => {
-    setSelectedNode(nodeId)
-    setActiveTab('graph')
-  }, [])
+  const closeFile = (path: string) => {
+    setOpenFiles((prev) => prev.filter((p) => p !== path))
+    if (tab.split('::')[0] === path) setTab(GRAPH)
+  }
 
-  const handleGoToDefinition = useCallback((symbol: string) => {
-    if (!activeProject || !window.atlasAPI) return
-    window.atlasAPI.search({ projectPath: activeProject, query: symbol, limit: 10 })
-      .then(res => {
-        const match = res.items.find(i => i.name === symbol && i.kind !== 'file')
-        if (match) handleNodeSelect(`${match.path}::${match.name}`)
+  const goToDefinition = useCallback((symbol: string) => {
+    if (!project) return
+    window.atlasAPI
+      .search({ projectPath: project, query: symbol, limit: 10 })
+      .then((res) => {
+        const match = res.items.find((i) => i.name === symbol && i.kind !== 'file')
+        if (match) openFile(`${match.path}::${match.name}`)
       })
-      .catch(err => setError(err.message))
-  }, [activeProject, handleNodeSelect])
+      .catch((err) => setError(err.message))
+  }, [project, openFile])
 
-  const handleCommand = useCallback((command: string) => {
-    switch (command) {
-      case 'index':
-        handleIndexProject()
-        break
-      case 'watch':
-        if (activeProject) window.atlasAPI?.watch(activeProject).catch(err => setError(err.message))
-        break
-      case 'doctor':
-        if (activeProject) {
-          window.atlasAPI?.doctor(activeProject).then(r => alert(r.output)).catch(err => setError(err.message))
-        }
-        break
-      case 'export-json':
-      case 'export-md':
-        setReportFormat(command === 'export-json' ? 'json' : 'markdown')
-        setReportExportOpen(true)
-        break
-      case 'settings':
-        setSettingsOpen(true)
-        break
+  const runCommand = useCallback((command: string) => {
+    if (command === 'index') reindex()
+    else if (command === 'settings') setSettingsOpen(true)
+    else if (command === 'export-json' || command === 'export-md') {
+      setReportFormat(command === 'export-json' ? 'json' : 'markdown')
+      setReportOpen(true)
+    } else if (project && command === 'watch') {
+      window.atlasAPI.watch(project).catch((err) => setError(err.message))
+    } else if (project && command === 'doctor') {
+      window.atlasAPI.doctor(project).then((r) => alert(r.output)).catch((err) => setError(err.message))
     }
-  }, [activeProject, handleIndexProject])
+  }, [project, reindex])
 
   const copyClientConfig = async () => {
-    if (!activeProject) return
-    await navigator.clipboard.writeText(await window.atlasAPI.mcpConfig(activeProject))
+    if (!project) return
+    await navigator.clipboard.writeText(await window.atlasAPI.mcpConfig(project))
     alert('Конфигурация MCP-сервера скопирована. Добавьте её в настройки клиента.')
   }
 
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const mod = e.ctrlKey || e.metaKey
+      const key = e.key.toLowerCase()
+      const open = (mode: PaletteMode) => {
+        e.preventDefault()
+        setPalette(mode)
+      }
+      if (e.key === 'Escape') {
+        setPalette(null)
+        setSettingsOpen(false)
+        setReportOpen(false)
+      } else if (!mod) return
+      else if (key === 'p') open('files')
+      else if (e.shiftKey && key === 'f') open('symbols')
+      else if (key === 'k') open('commands')
+      else if (key === ',') setSettingsOpen(true)
+      else if (key === 'b' && e.shiftKey) setRightOpen((v) => !v)
+      else if (key === 'b') setLeftOpen((v) => !v)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
+
+  const lastCall = status?.calls.recent[0]
+  const links = status ? Object.entries(status.edges).filter(([k]) => k !== 'contains').reduce((s, [, n]) => s + n, 0) : 0
+  const mainLang = overview ? Object.entries(overview.langs).sort((a, b) => b[1] - a[1])[0]?.[0] : null
+  const tabPath = tab.split('::')[0]
+
+  const railButton = (title: string, icon: JSX.Element, onClick: () => void, active = false) => (
+    <button key={title} title={title} onClick={onClick} className={`w-9 h-9 rounded-lg flex items-center justify-center ${active ? 'bg-accent text-accent-foreground' : 'text-muted-foreground hover:bg-muted'}`}>
+      {icon}
+    </button>
+  )
+
   return (
-    <div className="atlas-app h-full overflow-hidden flex flex-col bg-background text-foreground">
-      {/* Верхняя панель */}
-      <header className="h-12 shrink-0 border-b bg-background/50 flex items-center justify-between gap-2 px-4 overflow-hidden whitespace-nowrap">
-        <div className="flex items-center gap-4">
-          <div className="flex items-center gap-2">
-            <div className="w-6 h-6 rounded bg-blue-500 flex items-center justify-center">
-              <Zap className="w-3 h-3 text-white" />
-            </div>
-            <span className="font-semibold tracking-tight">Atlas</span>
-          </div>
-
-          {/* Переключатель проектов */}
-          <div className="flex items-center gap-2 ml-2">
-                        <select
-              className="border rounded px-2 py-1 text-xs bg-input w-40"
-              value={activeProject ?? ''}
-              onChange={(e) => {
-                const p = e.target.value
-                if (p) handleOpenProject(p)
-              }}
-            >
-              <option value="">Выберите проект</option>
-              {projects.map((p) => (
-                <option key={p} value={p}>{p}</option>
-              ))}
-            </select>
-            <button className="px-3 py-1 rounded border hover:bg-accent text-xs" onClick={handleChooseProject}>
-              Открыть папку…
-            </button>
-          </div>
-
-          {activeProject && (
-            <div className="flex items-center gap-2 ml-2">
-              <button
-                className="flex items-center gap-2 px-3 py-1.5 rounded border hover:bg-accent text-xs disabled:opacity-50"
-                onClick={handleIndexProject}
-                disabled={indexing}
-              >
-                {indexing ? (
-                  <>
-                    <RefreshCw className="w-3 h-3 animate-spin" /> Индексация…
-                  </>
-                ) : (
-                  <>
-                    <Play className="w-3 h-3" /> Проиндексировать
-                  </>
-                )}
-              </button>
-              <button
-                className="flex items-center gap-2 px-3 py-1.5 rounded border hover:bg-accent text-xs"
-                onClick={() => { setPaletteMode('files'); setCommandPaletteOpen(true) }}
-              >
-                <Search className="w-3 h-3" />
-                Поиск (Ctrl+P)
-              </button>
-              <button className="flex items-center gap-2 px-3 py-1.5 rounded border hover:bg-accent text-xs" onClick={copyClientConfig}>
-                <Copy className="w-3 h-3" />
-                Подключить клиент
-              </button>
-              <button
-                className="flex items-center gap-2 px-3 py-1.5 rounded border hover:bg-accent text-xs"
-                onClick={() => setReportExportOpen(true)}
-              >
-                <ExternalLink className="w-3 h-3" />
-                Экспорт отчёта
-              </button>
-            </div>
-          )}
-
-          {!activeProject && (
-            <div className="flex items-center gap-2 ml-2 text-xs text-muted-foreground">
-              <AlertCircle className="w-3 h-3" />
-              Проект не выбран
-            </div>
-          )}
-        </div>
-
-        <div className="flex items-center gap-3">
-          {status === 'indexing' && (
-            <div className="flex items-center gap-1 px-2 py-1 rounded bg-yellow-500/10 border border-yellow-500/20 text-[10px]">
-              <RefreshCw className="w-1.5 h-1.5 animate-spin" />
-              Индексация…
-            </div>
-          )}
-          {status === 'ready' && (
-            <div className="flex items-center gap-1 px-2 py-1 rounded bg-green-500/10 border border-green-500/20 text-[10px]">
-              <span className="w-1.5 h-1.5 rounded-full bg-green-500"></span>
-              Индекс готов
-            </div>
-          )}
-          {status === 'error' && (
-            <div className="flex items-center gap-1 px-2 py-1 rounded bg-red-500/10 border border-red-500/20 text-[10px]">
-              <AlertCircle className="w-1.5 h-1.5" />
-              Ошибка
-            </div>
-          )}
-          {overview && (
-            <div className="text-xs text-muted-foreground">
-              {overview.files} файлов, {overview.symbols} символов
-            </div>
-          )}
-          <button
-            className="px-3 py-1.5 rounded border hover:bg-accent text-xs"
-            onClick={() => setSettingsOpen(true)}
-          >
-            <Settings className="w-3 h-3" />
-          </button>
-        </div>
+    <div className="h-full flex flex-col overflow-hidden bg-background text-foreground">
+      <header className="h-11 shrink-0 bg-panel border-b border-border flex items-center px-4 relative">
+        <span className="text-lg font-semibold lowercase">atlas</span>
+        {project && <span className="ml-3 text-xs text-muted-foreground">/&nbsp; {projectName}</span>}
+        <span className="absolute left-1/2 -translate-x-1/2 text-xs text-muted-foreground whitespace-nowrap">Atlas — локальное рабочее пространство</span>
+        <button className="ml-auto text-muted-foreground" onClick={() => setRightOpen((v) => !v)} title="Инспектор (Ctrl+Shift+B)">
+          <PanelRight className="w-4 h-4" />
+        </button>
       </header>
 
       {error && (
-        <div className="px-4 py-2 bg-red-50 border border-red-200 text-red-700 text-xs">
-          {error}
+        <div className="px-4 py-2 bg-red-50 text-red-700 text-xs flex justify-between">
+          <span>{error}</span>
+          <button onClick={() => setError(null)}><X className="w-3 h-3" /></button>
         </div>
       )}
 
-      <div className="flex-1 flex overflow-hidden">
-        {/* Левая боковая панель */}
-        {sidebarOpen && activeProject && (
-          <aside className="w-80 border-r flex flex-col transition-all duration-200">
-            <div className="p-3 border-b">
-              <div className="flex items-center gap-2 mb-3">
-                <Folder className="w-4 h-4" />
-                <span className="font-medium text-sm">Файлы</span>
-                <button
-                  onClick={() => setSidebarOpen(false)}
-                  className="ml-auto p-1 rounded hover:bg-muted text-muted-foreground"
-                  title="Скрыть панель (Ctrl+B)"
-                >
-                  <ChevronLeft className="w-4 h-4" />
-                </button>
+      <div className="flex-1 flex min-h-0">
+        <nav className="w-[52px] shrink-0 bg-rail border-r border-border flex flex-col items-center py-3 gap-3">
+          {railButton('Обозреватель (Ctrl+B)', <PanelLeft className="w-4 h-4" />, () => setLeftOpen((v) => !v))}
+          {railButton('Граф проекта', <Waypoints className="w-4 h-4" />, () => { setTab(GRAPH); setGraphMode('graph') }, tab === GRAPH && graphMode === 'graph')}
+          {railButton('Поиск символов (Ctrl+Shift+F)', <Search className="w-4 h-4" />, () => setPalette('symbols'))}
+          {railButton('Список файлов', <Layers className="w-4 h-4" />, () => { setTab(GRAPH); setGraphMode('list') }, tab === GRAPH && graphMode === 'list')}
+          {railButton('MCP и журнал вызовов', <TerminalSquare className="w-4 h-4" />, () => setTab(ACTIVITY), tab === ACTIVITY)}
+          <div className="mt-auto">{railButton('Настройки (Ctrl+,)', <Settings className="w-4 h-4" />, () => setSettingsOpen(true))}</div>
+        </nav>
+
+        {leftOpen && (
+          <aside className="w-[244px] shrink-0 bg-panel border-r border-border flex flex-col min-h-0 p-3">
+            <div className="flex justify-between items-center px-1.5 mb-2 text-[11px] font-semibold text-muted-foreground">
+              <span>ПРОЕКТ</span>
+              <button onClick={chooseProject} title="Открыть папку…"><Plus className="w-4 h-4" /></button>
+            </div>
+            <label className="relative flex items-center gap-3 bg-muted rounded-lg px-3 py-2">
+              <Folder className="w-4 h-4 shrink-0 text-accent-foreground" />
+              <span className="min-w-0 flex-1">
+                <span className="block text-sm truncate">{project ? projectName : 'Не выбран'}</span>
+                <span className="block text-[10px] text-muted-foreground truncate" title={project ?? ''}>{project ?? 'Откройте папку проекта'}</span>
+              </span>
+              <ChevronDown className="w-3.5 h-3.5 shrink-0" />
+              <select
+                className="absolute inset-0 opacity-0 cursor-pointer"
+                aria-label="Проект"
+                value={project ?? ''}
+                onChange={(e) => (e.target.value === '+' ? chooseProject() : e.target.value && openProject(e.target.value))}
+              >
+                <option value="">Выберите проект</option>
+                {projects.map((p) => <option key={p} value={p}>{p}</option>)}
+                <option value="+">Открыть папку…</option>
+              </select>
+            </label>
+
+            <button onClick={() => setPalette('files')} className="mt-3 flex items-center gap-2 bg-background rounded-md px-3 py-2 text-xs text-muted-foreground">
+              <Search className="w-3.5 h-3.5" /> Найти файл…
+              <span className="ml-auto text-[10px]">Ctrl P</span>
+            </button>
+
+            <div className="flex justify-between px-1.5 mt-4 mb-2 text-[11px] font-semibold text-muted-foreground">
+              <span>ОБОЗРЕВАТЕЛЬ</span>
+              <span className="font-normal">{overview?.files}</span>
+            </div>
+            <div className="flex-1 overflow-auto min-h-0">
+              {project && <FileTree key={project} projectName={projectName} nodes={nodes} selected={selected} onSelect={setSelected} onOpen={openFile} />}
+            </div>
+
+            {project && (
+              <div className="mt-3 bg-muted rounded-lg p-3 text-[11px]">
+                <div className="flex items-center gap-2 text-xs">
+                  <Check className="w-3.5 h-3.5 text-green-600" />
+                  {busy ? 'Индексация…' : status?.indexed_at ? 'Проиндексирован' : 'Нет индекса'}
+                  <button onClick={reindex} disabled={busy} className="ml-auto" title="Обновить индекс">
+                    <RefreshCw className={`w-3.5 h-3.5 ${busy ? 'animate-spin' : ''}`} />
+                  </button>
+                </div>
+                <div className="text-muted-foreground mt-1">{overview?.files ?? 0} файлов · {formatNumber(links)} связей</div>
+                <div className="text-muted-foreground opacity-70 mt-1">Обновлён: {timeAgo(status?.indexed_at)}</div>
               </div>
-              <FileTree
-                projectPath={activeProject}
-                overview={overview}
-                onNodeSelect={handleNodeSelect}
-                onGraphHighlight={handleGraphHighlight}
-                selectedNode={selectedNode}
+            )}
+          </aside>
+        )}
+
+        <main className="flex-1 min-w-0 flex flex-col min-h-0">
+          <div className="h-10 shrink-0 border-b border-border flex items-stretch overflow-x-auto text-xs">
+            <button onClick={() => setTab(GRAPH)} className={`flex items-center gap-3 px-5 shrink-0 border-r border-border ${tab === GRAPH ? 'bg-muted' : 'text-muted-foreground'}`}>
+              <Waypoints className="w-3.5 h-3.5 text-accent-foreground" /> Граф проекта
+            </button>
+            {openFiles.map((p) => (
+              <div key={p} className={`flex items-center gap-2 px-4 shrink-0 border-r border-border ${tabPath === p ? 'bg-muted' : 'text-muted-foreground'}`}>
+                <button className="flex items-center gap-2 h-full" onClick={() => openFile(p)} title={p}>
+                  <FileText className="w-3.5 h-3.5" /> {fileName(p)}
+                </button>
+                <button onClick={() => closeFile(p)} title="Закрыть"><X className="w-3 h-3" /></button>
+              </div>
+            ))}
+            <button className="px-4 text-muted-foreground" onClick={() => setPalette('files')} title="Открыть файл"><Plus className="w-4 h-4" /></button>
+          </div>
+
+          {!project ? (
+            <div className="flex-1 flex flex-col items-center justify-center gap-3">
+              <h1 className="text-xl font-semibold">Откройте проект</h1>
+              <p className="text-xs text-muted-foreground">Atlas построит карту кода локально, на этом компьютере.</p>
+              <button onClick={chooseProject} className="bg-primary text-primary-foreground rounded-md px-4 py-2 text-xs font-medium">Открыть папку…</button>
+            </div>
+          ) : tab === GRAPH ? (
+            <>
+              <div className="flex-1 min-h-0">
+                <Graph
+                  projectName={projectName}
+                  nodes={nodes}
+                  edges={edges}
+                  totalFiles={overview?.files ?? 0}
+                  selected={selected?.split('::')[0] ?? null}
+                  mode={graphMode}
+                  onModeChange={setGraphMode}
+                  onSelect={setSelected}
+                  onOpen={openFile}
+                />
+              </div>
+              <ContextPanel projectPath={project} version={version} onExport={() => setReportOpen(true)} />
+            </>
+          ) : tab === ACTIVITY ? (
+            <div className="flex-1 overflow-auto p-6 space-y-4">
+              <h1 className="text-2xl font-semibold">MCP и журнал вызовов</h1>
+              <p className="text-xs text-muted-foreground max-w-xl">
+                Клиент нейросети запускает Atlas сам. Скопируйте конфигурацию и добавьте её в настройки клиента.
+              </p>
+              <div className="flex gap-3 text-xs">
+                <button onClick={copyClientConfig} className="bg-primary text-primary-foreground rounded-md px-4 py-2 font-medium">Скопировать конфигурацию MCP</button>
+                <button onClick={() => runCommand('doctor')} className="bg-muted rounded-md px-4 py-2">Проверить индекс</button>
+              </div>
+              <div className="max-w-xl border border-border rounded-lg"><TokenPanel key={version} projectPath={project} /></div>
+            </div>
+          ) : (
+            <div className="flex-1 min-h-0">
+              <FileView
+                key={`${project}:${tab}:${version}`}
+                projectPath={project}
+                nodeId={tab}
+                onGoToDefinition={goToDefinition}
+                onGraphHighlight={(id) => { setSelected(id); setTab(GRAPH) }}
               />
             </div>
-          </aside>
-        )}
-
-        {/* Кнопка открытия левой панели когда она закрыта */}
-        {!sidebarOpen && activeProject && (
-          <div className="w-8 border-r flex items-center justify-center bg-muted/50">
-            <button
-              onClick={() => setSidebarOpen(true)}
-              className="p-2 rounded hover:bg-muted text-muted-foreground"
-              title="Показать панель файлов (Ctrl+B)"
-            >
-              <ChevronRight className="w-5 h-5" />
-            </button>
-          </div>
-        )}
-
-        {/* Центральная область */}
-        <main className="flex-1 flex flex-col relative">
-          <div className="flex-1 overflow-hidden bg-background">
-            {activeTab === 'graph' && (
-              <Graph
-                nodes={graphNodes}
-                edges={graphEdges}
-                selectedNode={selectedNode}
-                onNodeClick={handleNodeSelect}
-              />
-            )}
-            {activeTab === 'file' && selectedNode && (
-              <FileView
-                key={`${activeProject}:${selectedNode}`}
-                projectPath={activeProject ?? ''}
-                nodeId={selectedNode}
-                onGoToDefinition={handleGoToDefinition}
-                onGraphHighlight={handleGraphHighlight}
-              />
-            )}
-            {activeTab === 'file' && !selectedNode && (
-              <div className="h-full flex items-center justify-center">
-                <div className="text-center">
-                  <FileText className="w-12 h-12 text-muted-foreground mx-auto mb-2" />
-                  <p className="text-muted-foreground text-sm">Выберите символ или файл для просмотра</p>
-                  <p className="text-xs text-muted-foreground mt-2">Или нажмите Ctrl+P для поиска</p>
-                </div>
-              </div>
-            )}
-            {activeTab === 'map' && overview && (
-              <div className="h-full p-6 overflow-y-auto">
-                <div className="text-center">
-                  <LayoutDashboard className="w-12 h-12 text-muted-foreground mx-auto mb-2" />
-                  <h3 className="text-sm font-semibold mb-2">Карта проекта</h3>
-                  <p className="text-xs text-muted-foreground mb-4">
-                    {overview.files} файлов · языки: {Object.entries(overview.langs).map(([l, n]) => `${l} ${n}`).join(', ')}
-                  </p>
-                  <div className="space-y-1 text-xs">
-                    {overview.top.map((n) => (
-                      <div key={n.path} className="flex items-center justify-between px-3 py-1 bg-muted/50 rounded cursor-pointer hover:bg-muted"
-                        onClick={() => handleNodeSelect(n.path)}>
-                        <span className="font-mono truncate">{n.path}</span>
-                        <span className="text-muted-foreground">~{n.tokens_est ?? 0} ток.</span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              </div>
-            )}
-            {activeTab === 'report' && (
-              <div className="h-full flex items-center justify-center">
-                <div className="text-center">
-                  <BarChart2 className="w-12 h-12 text-muted-foreground mx-auto mb-2" />
-                  <p className="text-muted-foreground text-sm">Отчёт проекта — нажмите «Экспорт отчёта»</p>
-                </div>
-              </div>
-            )}
-          </div>
-
-          {/* Табы в нижней части центральной области */}
-          <div className="h-8 border-t flex">
-            {tabs.map((tab) => (
-              <button
-                key={tab.id}
-                onClick={() => setActiveTab(tab.id)}
-                className={`flex-1 flex items-center justify-center gap-2 text-xs transition-colors ${
-                  activeTab === tab.id
-                    ? 'bg-accent text-accent-foreground border-b-2 border-primary'
-                    : 'text-muted-foreground hover:bg-muted'
-                }`}
-              >
-                {tab.icon}
-                <span>{tab.label}</span>
-              </button>
-            ))}
-          </div>
+          )}
         </main>
 
-        {/* Правая боковая панель — инспектор + токены */}
-        {rightSidebarOpen && (
-          <aside className="w-80 border-l flex flex-col transition-all duration-200">
-            {selectedNode ? (
-              <Inspector
-                projectPath={activeProject ?? ''}
-                nodeId={selectedNode}
-                onGraphSelect={(nodeId) => {
-                  setSelectedNode(nodeId)
-                  setActiveTab('graph')
-                }}
-              />
-            ) : (
-              <div className="h-64 flex flex-col p-4">
-                <div className="flex items-center gap-3 text-muted-foreground">
-                  <File className="w-5 h-5 opacity-50" />
-                  <span>Выберите узел для просмотра деталей</span>
-                </div>
-              </div>
-            )}
-            <TokenPanel projectPath={activeProject ?? ''} />
-            <button
-              onClick={() => setRightSidebarOpen(false)}
-              className="p-2 mx-3 mb-2 rounded hover:bg-muted text-muted-foreground self-end"
-              title="Скрыть панель (Ctrl+Shift+B)"
-            >
-              <ChevronRight className="w-5 h-5 rotate-180" />
-            </button>
-          </aside>
-        )}
-
-        {!rightSidebarOpen && (
-          <div className="w-8 border-l flex items-center justify-center bg-muted/50">
-            <button
-              onClick={() => setRightSidebarOpen(true)}
-              className="p-2 rounded hover:bg-muted text-muted-foreground"
-              title="Показать инспектор (Ctrl+Shift+B)"
-            >
-              <ChevronLeft className="w-5 h-5 rotate-180" />
-            </button>
-          </div>
+        {rightOpen && (
+          <Inspector
+            projectPath={project ?? ''}
+            target={selected}
+            nodes={nodes}
+            edges={edges}
+            version={version}
+            onSelect={setSelected}
+            onOpen={openFile}
+            onClose={() => setRightOpen(false)}
+          />
         )}
       </div>
 
-      {/* Статусная строка */}
-      <footer className="h-8 border-t bg-muted/50 flex items-center px-4 text-[10px] text-muted-foreground">
-        <span>
-          {overview ? `${overview.files} файлов · ${overview.symbols} символов` : 'Проект не открыт'}
-        </span>
+      <footer className="h-8 shrink-0 bg-panel border-t border-border flex items-center gap-8 px-4 text-[11px] text-muted-foreground whitespace-nowrap">
+        <span className="flex items-center gap-2"><ShieldCheck className="w-3.5 h-3.5 text-green-600" /> Индекс хранится локально, в .atlas/</span>
+        {branch && <span className="flex items-center gap-2"><GitBranch className="w-3.5 h-3.5" /> {branch}</span>}
+        <span className="ml-auto">{mainLang}</span>
+        <span>{lastCall ? `Последний вызов MCP: ${lastCall.tool}, ${timeAgo(lastCall.time)}` : 'Вызовов MCP ещё не было'}</span>
       </footer>
 
-      {/* Модальные окна */}
       <CommandPalette
-        projectPath={activeProject ?? ''}
-        isOpen={commandPaletteOpen}
-        initialMode={paletteMode}
-        onClose={() => setCommandPaletteOpen(false)}
-        onSelectFile={handleNodeSelect}
-        onSelectSymbol={(symbol) => handleNodeSelect(`${symbol.path}::${symbol.name}`)}
-        onRunCommand={handleCommand}
-        recentFiles={recentFiles}
+        projectPath={project ?? ''}
+        isOpen={palette !== null}
+        initialMode={palette ?? 'files'}
+        onClose={() => setPalette(null)}
+        onSelectFile={openFile}
+        onSelectSymbol={(s) => openFile(`${s.path}::${s.name}`)}
+        onRunCommand={runCommand}
+        recentFiles={openFiles}
       />
-
-      <SettingsPanel
-        projectPath={activeProject ?? ''}
-        isOpen={settingsOpen}
-        onClose={() => setSettingsOpen(false)}
-      />
-
-      <ReportExport
-        projectPath={activeProject ?? ''}
-        isOpen={reportExportOpen}
-        initialFormat={reportFormat}
-        onClose={() => setReportExportOpen(false)}
-      />
+      <SettingsPanel projectPath={project ?? ''} isOpen={settingsOpen} onClose={() => setSettingsOpen(false)} />
+      <ReportExport projectPath={project ?? ''} isOpen={reportOpen} initialFormat={reportFormat} onClose={() => setReportOpen(false)} />
     </div>
   )
 }

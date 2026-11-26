@@ -153,6 +153,19 @@ ipcMain.handle('atlas:doctor', async (_e, projectPath) => ({
 
 ipcMain.handle('atlas:overview', (_e, projectPath) => ui(projectPath, 'overview'))
 ipcMain.handle('atlas:status', (_e, projectPath) => ui(projectPath, 'status'))
+ipcMain.handle('atlas:map', (_e, projectPath) => ui(projectPath, 'map'))
+
+// Имя ветки берём из .git/HEAD, не запуская git в чужом каталоге
+ipcMain.handle('atlas:app-info', (_e, projectPath) => {
+  let branch = null
+  try {
+    const head = fs.readFileSync(path.join(projectPath, '.git', 'HEAD'), 'utf8').trim()
+    branch = head.startsWith('ref: ') ? head.replace('ref: refs/heads/', '') : head.slice(0, 7)
+  } catch {
+    // не репозиторий
+  }
+  return { branch }
+})
 for (const method of ['search', 'outline', 'read', 'neighbors']) {
   ipcMain.handle(`atlas:${method}`, (_e, { projectPath, ...args }) => ui(projectPath, method, args))
 }
@@ -186,9 +199,11 @@ ipcMain.handle('atlas:report', async (_e, { projectPath, format }) => {
 
 function createWindow() {
   mainWindow = new BrowserWindow({
-    width: 1400,
-    height: 900,
-    minWidth: 1000,
+    width: 1600,
+    height: 1000,
+    backgroundColor: '#1a191e',
+    autoHideMenuBar: true,
+    minWidth: 1100,
     minHeight: 700,
     title: 'Atlas — навигатор по проекту',
     webPreferences: {

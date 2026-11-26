@@ -3,6 +3,7 @@
 //! Это не инструменты MCP: нейросеть их не видит, в `tools/list` они не входят
 //! и в журнал вызовов не пишутся. Защита секретов действует та же.
 
+use crate::budget::estimate_tokens;
 use crate::tools::{normalize_rel, read_project_lines, ToolRegistry};
 use anyhow::{anyhow, bail, Result};
 use atlas_core::secrets::{mask_lines, mask_text};
@@ -47,6 +48,7 @@ impl ToolRegistry {
             "read" => self.ui_read(project_root, args),
             "neighbors" => self.ui_neighbors(args),
             "status" => self.ui_status(),
+            "map" => self.ui_map(project_root),
             other => bail!("неизвестный метод интерфейса: {other}"),
         }
     }
@@ -70,6 +72,23 @@ impl ToolRegistry {
         self.store
             .find_file_node_by_path(&normalize_rel(target))?
             .ok_or_else(|| anyhow!("файл «{target}» не найден в индексе"))
+    }
+
+    /// Карта проекта в том виде, в каком её получает нейросеть; в журнал не пишется.
+    fn ui_map(&self, project_root: &str) -> Result<Value> {
+        let text = self.overview_text(project_root)?;
+        let full_tokens: i64 = self
+            .store
+            .get_all_nodes()?
+            .iter()
+            .filter(|n| n.kind == NodeKind::File)
+            .map(|n| n.tokens_est as i64)
+            .sum();
+        Ok(json!({
+            "tokens": estimate_tokens(&text),
+            "full_tokens": full_tokens,
+            "text": text,
+        }))
     }
 
     fn ui_overview(&self, project_root: &str) -> Result<Value> {
