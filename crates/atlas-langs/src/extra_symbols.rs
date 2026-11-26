@@ -11,10 +11,16 @@ struct Found {
     descend: bool,
 }
 
-const NOTHING: Found = Found { symbol: None, descend: true };
+const NOTHING: Found = Found {
+    symbol: None,
+    descend: true,
+};
 
 fn found(name: Option<String>, kind: SymbolKind, descend: bool) -> Found {
-    Found { symbol: name.map(|n| (n, kind)), descend }
+    Found {
+        symbol: name.map(|n| (n, kind)),
+        descend,
+    }
 }
 
 pub(crate) fn extract(root: &Node, source: &[u8], lang: &str) -> Vec<Symbol> {
@@ -38,7 +44,11 @@ pub(crate) fn extract(root: &Node, source: &[u8], lang: &str) -> Vec<Symbol> {
             let line_end = node.end_position().row + 1;
             // Haskell: сигнатура и ветки одной функции — один символ
             match out.last_mut() {
-                Some(prev) if lang == "haskell" && prev.name == name && prev.line_end + 1 >= line_start => {
+                Some(prev)
+                    if lang == "haskell"
+                        && prev.name == name
+                        && prev.line_end + 1 >= line_start =>
+                {
                     prev.line_end = line_end;
                 }
                 _ => {
@@ -99,7 +109,8 @@ fn c_declarator(mut node: Node, source: &[u8]) -> Option<(String, bool, bool)> {
     let (mut function, mut qualified) = (false, false);
     loop {
         match node.kind() {
-            "identifier" | "field_identifier" | "type_identifier" | "destructor_name" | "operator_name" => {
+            "identifier" | "field_identifier" | "type_identifier" | "destructor_name"
+            | "operator_name" => {
                 return Some((text(node, source)?, function, qualified));
             }
             "qualified_identifier" => {
@@ -121,7 +132,13 @@ fn c_declarator(mut node: Node, source: &[u8]) -> Option<(String, bool, bool)> {
 fn c_family(node: &Node, source: &[u8]) -> Found {
     let declarator = || c_declarator(node.child_by_field_name("declarator")?, source);
     let member = parent_is(node, "field_declaration_list");
-    let callable = |qualified: bool| if member || qualified { SymbolKind::Method } else { SymbolKind::Function };
+    let callable = |qualified: bool| {
+        if member || qualified {
+            SymbolKind::Method
+        } else {
+            SymbolKind::Function
+        }
+    };
     match node.kind() {
         // внутрь тела не идём: локальные объявления не символы файла
         "function_definition" => match declarator() {
@@ -162,7 +179,11 @@ fn dart_signature_name(node: Node, source: &[u8]) -> Option<String> {
 
 fn dart(node: &Node, source: &[u8]) -> Found {
     let member = parent_is(node, "member_declaration") || parent_is(node, "class_body");
-    let callable = if member { SymbolKind::Method } else { SymbolKind::Function };
+    let callable = if member {
+        SymbolKind::Method
+    } else {
+        SymbolKind::Function
+    };
     match node.kind() {
         "function_declaration" | "method_declaration" | "declaration" => {
             found(dart_signature_name(*node, source), callable, false)
@@ -171,7 +192,11 @@ fn dart(node: &Node, source: &[u8]) -> Found {
             found(field_text(node, source, "name"), SymbolKind::Class, true)
         }
         "enum_declaration" => found(field_text(node, source, "name"), SymbolKind::Type, false),
-        "type_alias" => found(child_text(node, source, &["type_identifier", "identifier"]), SymbolKind::Type, false),
+        "type_alias" => found(
+            child_text(node, source, &["type_identifier", "identifier"]),
+            SymbolKind::Type,
+            false,
+        ),
         _ => NOTHING,
     }
 }
@@ -179,15 +204,32 @@ fn dart(node: &Node, source: &[u8]) -> Found {
 fn kotlin(node: &Node, source: &[u8]) -> Found {
     match node.kind() {
         "function_declaration" => {
-            let kind = if parent_is(node, "class_body") { SymbolKind::Method } else { SymbolKind::Function };
-            found(child_text(node, source, &["simple_identifier"]), kind, false)
+            let kind = if parent_is(node, "class_body") {
+                SymbolKind::Method
+            } else {
+                SymbolKind::Function
+            };
+            found(
+                child_text(node, source, &["simple_identifier"]),
+                kind,
+                false,
+            )
         }
         "class_declaration" | "object_declaration" => {
-            let interface = (0..node.child_count()).any(|i| node.child(i).is_some_and(|c| c.kind() == "interface"));
-            let kind = if interface { SymbolKind::Interface } else { SymbolKind::Class };
+            let interface = (0..node.child_count())
+                .any(|i| node.child(i).is_some_and(|c| c.kind() == "interface"));
+            let kind = if interface {
+                SymbolKind::Interface
+            } else {
+                SymbolKind::Class
+            };
             found(child_text(node, source, &["type_identifier"]), kind, true)
         }
-        "type_alias" => found(child_text(node, source, &["type_identifier"]), SymbolKind::Type, false),
+        "type_alias" => found(
+            child_text(node, source, &["type_identifier"]),
+            SymbolKind::Type,
+            false,
+        ),
         "property_declaration" => {
             let name = child_of_kind(node, &["variable_declaration"])
                 .and_then(|v| child_text(&v, source, &["simple_identifier"]));
@@ -203,9 +245,9 @@ fn elixir(node: &Node, source: &[u8]) -> Found {
     }
     let (kind, descend) = match field_text(node, source, "target").as_deref() {
         Some("defmodule" | "defprotocol" | "defimpl") => (SymbolKind::Class, true),
-        Some("def" | "defp" | "defmacro" | "defmacrop" | "defguard" | "defguardp" | "defdelegate") => {
-            (SymbolKind::Function, false)
-        }
+        Some(
+            "def" | "defp" | "defmacro" | "defmacrop" | "defguard" | "defguardp" | "defdelegate",
+        ) => (SymbolKind::Function, false),
         _ => return NOTHING,
     };
     let mut head = child_of_kind(node, &["arguments"]).and_then(|a| a.named_child(0));
@@ -229,8 +271,12 @@ fn haskell(node: &Node, source: &[u8]) -> Found {
             found(name(), SymbolKind::Function, false)
         }
         "bind" => found(name(), SymbolKind::Constant, false),
-        "data_type" | "newtype" | "type_synonym" | "type_synomym" => found(name(), SymbolKind::Type, false),
-        "class" if node.child_by_field_name("name").is_some() => found(name(), SymbolKind::Interface, true),
+        "data_type" | "newtype" | "type_synonym" | "type_synomym" => {
+            found(name(), SymbolKind::Type, false)
+        }
+        "class" if node.child_by_field_name("name").is_some() => {
+            found(name(), SymbolKind::Interface, true)
+        }
         _ => NOTHING,
     }
 }
@@ -246,17 +292,39 @@ fn ocaml(node: &Node, source: &[u8]) -> Found {
                 || node
                     .child_by_field_name("body")
                     .is_some_and(|b| matches!(b.kind(), "fun_expression" | "function_expression"));
-            let kind = if function { SymbolKind::Function } else { SymbolKind::Constant };
+            let kind = if function {
+                SymbolKind::Function
+            } else {
+                SymbolKind::Constant
+            };
             found(name, kind, false)
         }
-        "value_specification" => found(child_text(node, source, &["value_name"]), SymbolKind::Function, false),
+        "value_specification" => found(
+            child_text(node, source, &["value_name"]),
+            SymbolKind::Function,
+            false,
+        ),
         "type_binding" => found(field_text(node, source, "name"), SymbolKind::Type, false),
-        "module_binding" => found(child_text(node, source, &["module_name"]), SymbolKind::Class, true),
-        "module_type_definition" => {
-            found(child_text(node, source, &["module_type_name"]), SymbolKind::Interface, true)
-        }
-        "class_binding" => found(child_text(node, source, &["class_name"]), SymbolKind::Class, true),
-        "method_definition" => found(child_text(node, source, &["method_name"]), SymbolKind::Method, false),
+        "module_binding" => found(
+            child_text(node, source, &["module_name"]),
+            SymbolKind::Class,
+            true,
+        ),
+        "module_type_definition" => found(
+            child_text(node, source, &["module_type_name"]),
+            SymbolKind::Interface,
+            true,
+        ),
+        "class_binding" => found(
+            child_text(node, source, &["class_name"]),
+            SymbolKind::Class,
+            true,
+        ),
+        "method_definition" => found(
+            child_text(node, source, &["method_name"]),
+            SymbolKind::Method,
+            false,
+        ),
         _ => NOTHING,
     }
 }
@@ -265,13 +333,19 @@ fn graphql(node: &Node, source: &[u8]) -> Found {
     let kind = match node.kind() {
         "object_type_definition" | "input_object_type_definition" => SymbolKind::Class,
         "interface_type_definition" => SymbolKind::Interface,
-        "enum_type_definition" | "scalar_type_definition" | "union_type_definition" => SymbolKind::Type,
+        "enum_type_definition" | "scalar_type_definition" | "union_type_definition" => {
+            SymbolKind::Type
+        }
         "field_definition" => SymbolKind::Field,
         "directive_definition" => SymbolKind::Constant,
         "operation_definition" | "fragment_definition" => SymbolKind::Function,
         _ => return NOTHING,
     };
-    found(child_text(node, source, &["name", "fragment_name"]), kind, true)
+    found(
+        child_text(node, source, &["name", "fragment_name"]),
+        kind,
+        true,
+    )
 }
 
 fn sql(node: &Node, source: &[u8]) -> Found {

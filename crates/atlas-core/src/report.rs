@@ -93,7 +93,10 @@ impl ReportGenerator {
         self.write_problems(&mut out, &files, &symbols, &edges)?;
 
         // README и сигнатуры могут содержать секреты
-        Ok(crate::secrets::mask_text(&limit_tokens(out, self.options.max_tokens)))
+        Ok(crate::secrets::mask_text(&limit_tokens(
+            out,
+            self.options.max_tokens,
+        )))
     }
 
     fn write_structure(&self, out: &mut String, files: &[atlas_store::Node]) -> anyhow::Result<()> {
@@ -134,11 +137,7 @@ impl ReportGenerator {
         // files уже отсортированы по рангу
         for f in files.iter().take(10) {
             let count = symbols.iter().filter(|s| s.path == f.path).count();
-            writeln!(
-                out,
-                "- {} — ранг {:.2}, символов {}",
-                f.path, f.rank, count
-            )?;
+            writeln!(out, "- {} — ранг {:.2}, символов {}", f.path, f.rank, count)?;
         }
         let mut top_symbols: Vec<&atlas_store::Node> = symbols.iter().take(8).collect();
         if !top_symbols.is_empty() {
@@ -178,7 +177,9 @@ impl ReportGenerator {
             let (Some(src), Some(dst)) = (by_id.get(&e.src_id), by_id.get(&e.dst_id)) else {
                 continue;
             };
-            *deps.entry((src.path.clone(), dst.path.clone())).or_default() += 1;
+            *deps
+                .entry((src.path.clone(), dst.path.clone()))
+                .or_default() += 1;
         }
         if deps.is_empty() {
             writeln!(out, "Связей импорта между файлами не найдено.\n")?;
@@ -245,8 +246,7 @@ impl ReportGenerator {
         edges: &[atlas_store::Edge],
     ) -> anyhow::Result<()> {
         writeln!(out, "## Проблемы и ограничения\n")?;
-        let no_lang: Vec<&atlas_store::Node> =
-            files.iter().filter(|f| f.lang.is_none()).collect();
+        let no_lang: Vec<&atlas_store::Node> = files.iter().filter(|f| f.lang.is_none()).collect();
         writeln!(out, "- Файлов без поддерживаемого языка: {}", no_lang.len())?;
         let weak = edges
             .iter()
@@ -256,7 +256,12 @@ impl ReportGenerator {
 
         let called: HashSet<uuid::Uuid> = edges
             .iter()
-            .filter(|e| matches!(e.kind, EdgeKind::Calls | EdgeKind::Tests | EdgeKind::Extends))
+            .filter(|e| {
+                matches!(
+                    e.kind,
+                    EdgeKind::Calls | EdgeKind::Tests | EdgeKind::Extends
+                )
+            })
             .map(|e| e.dst_id)
             .collect();
         let mut dead: Vec<&atlas_store::Node> = symbols
@@ -267,11 +272,24 @@ impl ReportGenerator {
                     && !called.contains(&s.id)
             })
             .collect();
-        dead.sort_by(|a, b| b.tokens_est.cmp(&a.tokens_est).then_with(|| a.path.cmp(&b.path)));
+        dead.sort_by(|a, b| {
+            b.tokens_est
+                .cmp(&a.tokens_est)
+                .then_with(|| a.path.cmp(&b.path))
+        });
         if !dead.is_empty() {
-            writeln!(out, "- Возможный мёртвый код (без входящих вызовов, топ-10):")?;
+            writeln!(
+                out,
+                "- Возможный мёртвый код (без входящих вызовов, топ-10):"
+            )?;
             for s in dead.iter().take(10) {
-                writeln!(out, "  - {} ({}:{})", s.name, s.path, s.line_start.unwrap_or(0))?;
+                writeln!(
+                    out,
+                    "  - {} ({}:{})",
+                    s.name,
+                    s.path,
+                    s.line_start.unwrap_or(0)
+                )?;
             }
         }
         writeln!(out)?;
@@ -282,10 +300,15 @@ impl ReportGenerator {
 fn read_readme(root: &std::path::Path) -> Option<String> {
     for name in ["README.md", "README", "readme.md"] {
         // README не должен быть ссылкой на закрытый файл или за пределы проекта
-        let Ok((base, file)) = root.canonicalize().and_then(|b| Ok((b, root.join(name).canonicalize()?))) else {
+        let Ok((base, file)) = root
+            .canonicalize()
+            .and_then(|b| Ok((b, root.join(name).canonicalize()?)))
+        else {
             continue;
         };
-        let Ok(inside) = file.strip_prefix(&base) else { continue };
+        let Ok(inside) = file.strip_prefix(&base) else {
+            continue;
+        };
         if crate::secrets::is_closed_path(&inside.to_string_lossy()) {
             continue;
         }
@@ -323,7 +346,14 @@ fn find_cycles(graph: &BTreeMap<String, Vec<String>>) -> Vec<Vec<String>> {
         let mut stack = vec![start.clone()];
         let mut path = vec![start.clone()];
         let mut visited: HashSet<String> = HashSet::new();
-        if dfs_cycle(graph, start, &mut stack, &mut path, &mut visited, &mut cycles) {
+        if dfs_cycle(
+            graph,
+            start,
+            &mut stack,
+            &mut path,
+            &mut visited,
+            &mut cycles,
+        ) {
             break;
         }
     }
@@ -393,14 +423,20 @@ pub fn report_json(store: &Store, project_root: &str) -> anyhow::Result<serde_js
     let files = nodes.iter().filter(|n| n.kind == NodeKind::File).count();
     let mut languages: BTreeMap<String, usize> = BTreeMap::new();
     for f in nodes.iter().filter(|n| n.kind == NodeKind::File) {
-        *languages.entry(f.lang.clone().unwrap_or_else(|| "other".into())).or_default() += 1;
+        *languages
+            .entry(f.lang.clone().unwrap_or_else(|| "other".into()))
+            .or_default() += 1;
     }
     let mut symbols: Vec<_> = nodes
         .iter()
         .filter(|n| !matches!(n.kind, NodeKind::File | NodeKind::Dir))
         .collect();
     symbols.sort_by(|a, b| b.rank.total_cmp(&a.rank).then_with(|| a.path.cmp(&b.path)));
-    let calls: Vec<_> = edges.iter().filter(|e| e.kind == EdgeKind::Calls).take(500).collect();
+    let calls: Vec<_> = edges
+        .iter()
+        .filter(|e| e.kind == EdgeKind::Calls)
+        .take(500)
+        .collect();
     let used: HashSet<uuid::Uuid> = calls.iter().flat_map(|e| [e.src_id, e.dst_id]).collect();
     let by_tool = store.call_log_summary()?;
 
@@ -445,14 +481,20 @@ pub fn report_html(store: &Store, project_root: &str) -> anyhow::Result<String> 
     let file_nodes: Vec<_> = nodes.iter().filter(|n| n.kind == NodeKind::File).collect();
     let mut languages: BTreeMap<String, usize> = BTreeMap::new();
     for f in &file_nodes {
-        *languages.entry(f.lang.clone().unwrap_or_else(|| "other".into())).or_default() += 1;
+        *languages
+            .entry(f.lang.clone().unwrap_or_else(|| "other".into()))
+            .or_default() += 1;
     }
     let mut symbols: Vec<_> = nodes
         .iter()
         .filter(|n| !matches!(n.kind, NodeKind::File | NodeKind::Dir))
         .collect();
     symbols.sort_by(|a, b| b.rank.total_cmp(&a.rank).then_with(|| a.path.cmp(&b.path)));
-    let calls: Vec<_> = edges.iter().filter(|e| e.kind == EdgeKind::Calls).take(500).collect();
+    let calls: Vec<_> = edges
+        .iter()
+        .filter(|e| e.kind == EdgeKind::Calls)
+        .take(500)
+        .collect();
     let _used: HashSet<uuid::Uuid> = calls.iter().flat_map(|e| [e.src_id, e.dst_id]).collect();
     let _ = store.call_log_summary()?;
 
@@ -514,10 +556,13 @@ pub fn report_html(store: &Store, project_root: &str) -> anyhow::Result<String> 
     let readme = read_readme(std::path::Path::new(project_root))
         .map(|s| html_escape(&s))
         .unwrap_or_else(|| "README не найден; описание построено по индексу.".to_string());
-    out.push_str(&format!(r#"
+    out.push_str(&format!(
+        r#"
     <h2>Что это за проект</h2>
     <p>{}</p>
-"#, readme.replace('\n', "<br>")));
+"#,
+        readme.replace('\n', "<br>")
+    ));
 
     // Stats
     let main_lang = languages
@@ -538,9 +583,15 @@ pub fn report_html(store: &Store, project_root: &str) -> anyhow::Result<String> 
 
     // Languages
     if !languages.is_empty() {
-        out.push_str("<h2>Языки</h2><table><thead><tr><th>Язык</th><th>Файлов</th></tr></thead><tbody>");
+        out.push_str(
+            "<h2>Языки</h2><table><thead><tr><th>Язык</th><th>Файлов</th></tr></thead><tbody>",
+        );
         for (lang, count) in languages {
-            out.push_str(&format!("<tr><td>{}</td><td>{}</td></tr>", html_escape(&lang), count));
+            out.push_str(&format!(
+                "<tr><td>{}</td><td>{}</td></tr>",
+                html_escape(&lang),
+                count
+            ));
         }
         out.push_str("</tbody></table>");
     }
@@ -552,7 +603,9 @@ pub fn report_html(store: &Store, project_root: &str) -> anyhow::Result<String> 
         let parts: Vec<&str> = f.path.split('/').collect();
         let depth = parts.len().saturating_sub(1).min(3);
         for d in 0..=depth {
-            if d == 0 && parts.len() == 1 { continue; }
+            if d == 0 && parts.len() == 1 {
+                continue;
+            }
             let key = parts[..=d].join("/");
             if d < parts.len() - 1 || parts.len() == 1 {
                 *groups.entry(key).or_default() += 1;
@@ -561,7 +614,12 @@ pub fn report_html(store: &Store, project_root: &str) -> anyhow::Result<String> 
     }
     for (path, count) in groups {
         let depth = path.matches('/').count();
-        out.push_str(&format!("<li>{}<strong>{}</strong> — {} файлов</li>", "· ".repeat(depth + 1), html_escape(&path), count));
+        out.push_str(&format!(
+            "<li>{}<strong>{}</strong> — {} файлов</li>",
+            "· ".repeat(depth + 1),
+            html_escape(&path),
+            count
+        ));
     }
     out.push_str("</ul>");
 
@@ -569,32 +627,55 @@ pub fn report_html(store: &Store, project_root: &str) -> anyhow::Result<String> 
     out.push_str("<h2>Ключевые модули и точки входа</h2><ul>");
     for f in file_nodes.iter().take(10) {
         let count = symbols.iter().filter(|s| s.path == f.path).count();
-        out.push_str(&format!("<li><strong>{}</strong> — ранг {:.2}, символов {}</li>", html_escape(&f.path), f.rank, count));
+        out.push_str(&format!(
+            "<li><strong>{}</strong> — ранг {:.2}, символов {}</li>",
+            html_escape(&f.path),
+            f.rank,
+            count
+        ));
     }
     if !symbols.is_empty() {
         out.push_str("</ul><h3>Главные символы</h3><ul>");
         let mut top_symbols: Vec<_> = symbols.iter().take(8).collect();
         top_symbols.sort_by(|a, b| b.rank.total_cmp(&a.rank).then_with(|| a.path.cmp(&b.path)));
         for s in top_symbols.iter().take(8) {
-            out.push_str(&format!("<li>{} (<code>{}</code>, {}:{})</li>", html_escape(&s.name), s.kind, html_escape(&s.path), s.line_start.unwrap_or(0)));
+            out.push_str(&format!(
+                "<li>{} (<code>{}</code>, {}:{})</li>",
+                html_escape(&s.name),
+                s.kind,
+                html_escape(&s.path),
+                s.line_start.unwrap_or(0)
+            ));
         }
     }
     out.push_str("</ul>");
 
     // Dependencies
     out.push_str("<h2>Зависимости</h2>");
-    let by_id: HashMap<uuid::Uuid, &atlas_store::Node> = file_nodes.iter().map(|f| (f.id, *f)).collect();
+    let by_id: HashMap<uuid::Uuid, &atlas_store::Node> =
+        file_nodes.iter().map(|f| (f.id, *f)).collect();
     let mut deps: BTreeMap<(String, String), usize> = BTreeMap::new();
     for e in edges.iter().filter(|e| e.kind == EdgeKind::Imports) {
-        let (Some(src), Some(dst)) = (by_id.get(&e.src_id), by_id.get(&e.dst_id)) else { continue };
-        *deps.entry((src.path.clone(), dst.path.clone())).or_default() += 1;
+        let (Some(src), Some(dst)) = (by_id.get(&e.src_id), by_id.get(&e.dst_id)) else {
+            continue;
+        };
+        *deps
+            .entry((src.path.clone(), dst.path.clone()))
+            .or_default() += 1;
     }
     if deps.is_empty() {
         out.push_str("<p>Связей импорта между файлами не найдено.</p>");
     } else {
-        out.push_str("<table><thead><tr><th>Источник</th><th>Цель</th><th>Кол-во</th></tr></thead><tbody>");
+        out.push_str(
+            "<table><thead><tr><th>Источник</th><th>Цель</th><th>Кол-во</th></tr></thead><tbody>",
+        );
         for ((src, dst), n) in deps.iter().take(50) {
-            out.push_str(&format!("<tr><td>{}</td><td>{}</td><td>{}</td></tr>", html_escape(src), html_escape(dst), n));
+            out.push_str(&format!(
+                "<tr><td>{}</td><td>{}</td><td>{}</td></tr>",
+                html_escape(src),
+                html_escape(dst),
+                n
+            ));
         }
         out.push_str("</tbody></table>");
     }
@@ -608,7 +689,14 @@ pub fn report_html(store: &Store, project_root: &str) -> anyhow::Result<String> 
     if !cycles.is_empty() {
         out.push_str("<h3>Циклические зависимости</h3>");
         for cycle in cycles.iter().take(5) {
-            out.push_str(&format!("<div class=\"cycle\">{}</div>", cycle.iter().map(|s| html_escape(s)).collect::<Vec<_>>().join(" → ")));
+            out.push_str(&format!(
+                "<div class=\"cycle\">{}</div>",
+                cycle
+                    .iter()
+                    .map(|s| html_escape(s))
+                    .collect::<Vec<_>>()
+                    .join(" → ")
+            ));
         }
     }
 
@@ -618,7 +706,11 @@ pub fn report_html(store: &Store, project_root: &str) -> anyhow::Result<String> 
         recent if !recent.is_empty() => {
             out.push_str("<p>Git-история не подключена; ниже — самые свежие файлы по времени изменения.</p><ul>");
             for (path, mtime) in recent {
-                out.push_str(&format!("<li><strong>{}</strong> — {}</li>", html_escape(&path), mtime));
+                out.push_str(&format!(
+                    "<li><strong>{}</strong> — {}</li>",
+                    html_escape(&path),
+                    mtime
+                ));
             }
             out.push_str("</ul>");
         }
@@ -633,10 +725,18 @@ pub fn report_html(store: &Store, project_root: &str) -> anyhow::Result<String> 
     } else {
         let calls: i64 = summary.iter().map(|(_, n, _)| *n).sum();
         let tokens: i64 = summary.iter().map(|(_, _, t)| *t).sum();
-        out.push_str(&format!("<p>Вызовов: <strong>{}</strong>, токенов ответов ~<strong>{}</strong></p>", calls, tokens));
+        out.push_str(&format!(
+            "<p>Вызовов: <strong>{}</strong>, токенов ответов ~<strong>{}</strong></p>",
+            calls, tokens
+        ));
         out.push_str("<table><thead><tr><th>Инструмент</th><th>Вызовов</th><th>Токенов</th></tr></thead><tbody>");
         for (tool, n, t) in summary {
-            out.push_str(&format!("<tr><td>{}</td><td>{}</td><td>{}</td></tr>", html_escape(&tool), n, t));
+            out.push_str(&format!(
+                "<tr><td>{}</td><td>{}</td><td>{}</td></tr>",
+                html_escape(&tool),
+                n,
+                t
+            ));
         }
         out.push_str("</tbody></table>");
     }
@@ -644,28 +744,63 @@ pub fn report_html(store: &Store, project_root: &str) -> anyhow::Result<String> 
     // Problems
     out.push_str("<h2>Проблемы и ограничения</h2><ul>");
     let no_lang: Vec<_> = file_nodes.iter().filter(|f| f.lang.is_none()).collect();
-    out.push_str(&format!("<li>Файлов без поддерживаемого языка: {}</li>", no_lang.len()));
-    let weak = edges.iter().filter(|e| format!("{}", e.confidence) != "certain").count();
+    out.push_str(&format!(
+        "<li>Файлов без поддерживаемого языка: {}</li>",
+        no_lang.len()
+    ));
+    let weak = edges
+        .iter()
+        .filter(|e| format!("{}", e.confidence) != "certain")
+        .count();
     out.push_str(&format!("<li>Связей с низкой уверенностью: {}</li>", weak));
-    let called: HashSet<uuid::Uuid> = edges.iter().filter(|e| matches!(e.kind, EdgeKind::Calls | EdgeKind::Tests | EdgeKind::Extends)).map(|e| e.dst_id).collect();
-    let mut dead: Vec<_> = symbols.iter().filter(|s| matches!(s.kind, NodeKind::Function | NodeKind::Method) && !s.path.to_lowercase().contains("test") && !called.contains(&s.id)).collect();
-    dead.sort_by(|a, b| b.tokens_est.cmp(&a.tokens_est).then_with(|| a.path.cmp(&b.path)));
+    let called: HashSet<uuid::Uuid> = edges
+        .iter()
+        .filter(|e| {
+            matches!(
+                e.kind,
+                EdgeKind::Calls | EdgeKind::Tests | EdgeKind::Extends
+            )
+        })
+        .map(|e| e.dst_id)
+        .collect();
+    let mut dead: Vec<_> = symbols
+        .iter()
+        .filter(|s| {
+            matches!(s.kind, NodeKind::Function | NodeKind::Method)
+                && !s.path.to_lowercase().contains("test")
+                && !called.contains(&s.id)
+        })
+        .collect();
+    dead.sort_by(|a, b| {
+        b.tokens_est
+            .cmp(&a.tokens_est)
+            .then_with(|| a.path.cmp(&b.path))
+    });
     if !dead.is_empty() {
         out.push_str("<li>Возможный мёртвый код (без входящих вызовов, топ-10):<ul>");
         for s in dead.iter().take(10) {
-            out.push_str(&format!("<li>{} (<code>{}</code>:{})</li>", html_escape(&s.name), html_escape(&s.path), s.line_start.unwrap_or(0)));
+            out.push_str(&format!(
+                "<li>{} (<code>{}</code>:{})</li>",
+                html_escape(&s.name),
+                html_escape(&s.path),
+                s.line_start.unwrap_or(0)
+            ));
         }
         out.push_str("</ul></li>");
     }
     out.push_str("</ul>");
 
     // Footer
-    out.push_str(&format!(r#"
+    out.push_str(&format!(
+        r#"
     <div class="footer">
         <p>Сгенерировано Atlas v{} · {}</p>
     </div>
 </body>
-</html>"#, env!("CARGO_PKG_VERSION"), chrono::Utc::now().format("%Y-%m-%d %H:%M UTC")));
+</html>"#,
+        env!("CARGO_PKG_VERSION"),
+        chrono::Utc::now().format("%Y-%m-%d %H:%M UTC")
+    ));
 
     Ok(out)
 }
@@ -690,7 +825,7 @@ fn html_escape(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use atlas_store::schema::{Edge, EdgeKind, Confidence, Node, NodeKind};
+    use atlas_store::schema::{Confidence, Edge, EdgeKind, Node, NodeKind};
     use uuid::Uuid;
 
     fn node(kind: NodeKind, path: &str, name: &str, rank: f64) -> Node {

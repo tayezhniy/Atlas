@@ -118,9 +118,18 @@ mod tests {
     #[test]
     fn test_detect_language() {
         assert_eq!(LanguageParser::detect_language("src/main.rs"), Some("rust"));
-        assert_eq!(LanguageParser::detect_language("src/main.ts"), Some("typescript"));
-        assert_eq!(LanguageParser::detect_language("src/main.js"), Some("typescript"));
-        assert_eq!(LanguageParser::detect_language("src/main.py"), Some("python"));
+        assert_eq!(
+            LanguageParser::detect_language("src/main.ts"),
+            Some("typescript")
+        );
+        assert_eq!(
+            LanguageParser::detect_language("src/main.js"),
+            Some("typescript")
+        );
+        assert_eq!(
+            LanguageParser::detect_language("src/main.py"),
+            Some("python")
+        );
         assert_eq!(LanguageParser::detect_language("data.bin"), None);
     }
 

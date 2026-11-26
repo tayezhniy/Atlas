@@ -51,7 +51,9 @@ impl FileWatcher {
                         return Some(WatchEvent::Created(p.clone()));
                     }
                 }
-                EventKind::Modify(notify::event::ModifyKind::Name(notify::event::RenameMode::Both)) => {
+                EventKind::Modify(notify::event::ModifyKind::Name(
+                    notify::event::RenameMode::Both,
+                )) => {
                     if e.paths.len() == 2 {
                         return Some(WatchEvent::Renamed(e.paths[0].clone(), e.paths[1].clone()));
                     }

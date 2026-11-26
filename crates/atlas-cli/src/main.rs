@@ -5,7 +5,7 @@ use atlas_indexer::{FileWatcher, IncrementalUpdater, ProjectIndexer, WatchEvent}
 use atlas_mcp::{McpConfig, McpServer, Transport};
 use atlas_store::Store;
 use clap::{Parser, Subcommand};
-use serde_json::{Value, from_str, to_string_pretty, Map};
+use serde_json::{from_str, to_string_pretty, Map, Value};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -98,7 +98,9 @@ enum SettingsCommand {
 
 fn main() -> Result<()> {
     // Журнал только в stderr: в режиме `mcp` stdout занят протоколом
-    tracing_subscriber::fmt().with_writer(std::io::stderr).init();
+    tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
+        .init();
     let cli = Cli::parse();
 
     match cli.command {
@@ -134,7 +136,7 @@ fn main() -> Result<()> {
                 tracing::info!("индекса ещё нет, индексирую {}", root.display());
                 ProjectIndexer::new(&mut store, &root.to_string_lossy()).index_project()?;
             }
-            
+
             // Читаем настройки проекта
             let mut tool_budgets: HashMap<String, usize> = HashMap::new();
             let mut closed_paths: Vec<String> = Vec::new();
@@ -151,7 +153,7 @@ fn main() -> Result<()> {
                     }
                 }
             }
-            
+
             let config = McpConfig {
                 transport,
                 tool_budgets,
@@ -180,9 +182,16 @@ fn main() -> Result<()> {
         Commands::Settings { command } => match command {
             SettingsCommand::Get { key, project } => {
                 let store = open_store(&project_root(project.as_deref())?)?;
-                println!("{}", store.get_setting(&key)?.unwrap_or_else(|| "null".into()));
+                println!(
+                    "{}",
+                    store.get_setting(&key)?.unwrap_or_else(|| "null".into())
+                );
             }
-            SettingsCommand::Set { key, value, project } => {
+            SettingsCommand::Set {
+                key,
+                value,
+                project,
+            } => {
                 from_str::<Value>(&value)
                     .with_context(|| format!("значение должно быть JSON, получено: {value}"))?;
                 let store = open_store(&project_root(project.as_deref())?)?;
@@ -208,7 +217,10 @@ fn main() -> Result<()> {
             let root = root.to_string_lossy();
             match format.as_str() {
                 "markdown" | "md" => {
-                    let options = ReportOptions { project_root: root.to_string(), ..Default::default() };
+                    let options = ReportOptions {
+                        project_root: root.to_string(),
+                        ..Default::default()
+                    };
                     println!("{}", ReportGenerator::new(options).generate(&store)?);
                 }
                 "json" => println!("{}", to_string_pretty(&report_json(&store, &root)?)?),
@@ -253,10 +265,7 @@ fn open_store(root: &Path) -> Result<Store> {
 fn cmd_run(command: &str) -> Result<bool> {
     println!("🏃 Выполнение: {command}");
     use std::process::Command;
-    let output = Command::new("sh")
-        .arg("-c")
-        .arg(command)
-        .output()?;
+    let output = Command::new("sh").arg("-c").arg(command).output()?;
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -269,7 +278,10 @@ fn cmd_run(command: &str) -> Result<bool> {
 
     let failed = !output.status.success();
     if failed {
-        println!("❌ Команда завершилась с ошибкой (код: {:?})", output.status.code());
+        println!(
+            "❌ Команда завершилась с ошибкой (код: {:?})",
+            output.status.code()
+        );
     } else {
         println!("✅ Команда выполнена успешно");
     }
@@ -283,7 +295,11 @@ fn doctor(root: &Path) -> Result<bool> {
 
     let path = db_path(root);
     if !path.exists() {
-        println!("[FAIL] индекса нет: {} — выполните `atlas index {}`", path.display(), root.display());
+        println!(
+            "[FAIL] индекса нет: {} — выполните `atlas index {}`",
+            path.display(),
+            root.display()
+        );
         return Ok(true);
     }
     println!("[ OK ] файл индекса: {}", path.display());
@@ -350,12 +366,14 @@ fn cmd_watch(root: &Path) -> Result<()> {
 
     let mut watcher = FileWatcher::new()?;
     watcher.watch(root)?;
-    println!("👀 Наблюдение за {} (Ctrl+C для остановки)...", root.display());
+    println!(
+        "👀 Наблюдение за {} (Ctrl+C для остановки)...",
+        root.display()
+    );
 
     loop {
         match watcher.next_event() {
-            Some(WatchEvent::Modified(p))
-            | Some(WatchEvent::Created(p)) => {
+            Some(WatchEvent::Modified(p)) | Some(WatchEvent::Created(p)) => {
                 if let Ok(rel) = p.strip_prefix(root) {
                     let rel_str = rel.to_string_lossy().to_string();
                     if rel_str.starts_with(".atlas/") || rel_str.starts_with(".git/") {
@@ -387,7 +405,10 @@ fn cmd_watch(root: &Path) -> Result<()> {
                     if let Ok(content) = std::fs::read_to_string(&to) {
                         let mut upd = IncrementalUpdater::new(&mut store, &root_str);
                         if upd.update_file(rel_to.to_string_lossy().as_ref(), &content)? {
-                            println!("🔄 Переиндексирован (переименован): {}", rel_to.to_string_lossy());
+                            println!(
+                                "🔄 Переиндексирован (переименован): {}",
+                                rel_to.to_string_lossy()
+                            );
                         }
                     }
                 }

@@ -7,8 +7,19 @@ const MASK: &str = "***";
 
 /// Префиксы известных форматов ключей: маскируются всегда.
 const TOKEN_PREFIXES: [&str; 13] = [
-    "sk-", "sk_live_", "AKIA", "ASIA", "AIza", "ghp_", "gho_", "ghs_", "github_pat_", "glpat-",
-    "xoxb-", "xoxp-", "eyJ",
+    "sk-",
+    "sk_live_",
+    "AKIA",
+    "ASIA",
+    "AIza",
+    "ghp_",
+    "gho_",
+    "ghs_",
+    "github_pat_",
+    "glpat-",
+    "xoxb-",
+    "xoxp-",
+    "eyJ",
 ];
 
 /// Пути, содержимое которых не отдаётся совсем.
@@ -19,14 +30,28 @@ pub fn is_closed_path(path: &str) -> bool {
     // `secrets.rs` и `CredentialsForm.tsx` — обычный код; значения в нём маскируются
     let source = matches!(
         ext,
-        "rs" | "py" | "ts" | "tsx" | "js" | "jsx" | "go" | "java" | "cs" | "c" | "h" | "cpp" | "kt" | "swift" | "md"
+        "rs" | "py"
+            | "ts"
+            | "tsx"
+            | "js"
+            | "jsx"
+            | "go"
+            | "java"
+            | "cs"
+            | "c"
+            | "h"
+            | "cpp"
+            | "kt"
+            | "swift"
+            | "md"
     );
     let secret_data = !source
         && (name.contains("credentials")
             || name.starts_with("secret.")
             || name.starts_with("secrets.")
             || name.starts_with("service-account")
-            || p.split('/').any(|part| part == "secrets" || part == "credentials"));
+            || p.split('/')
+                .any(|part| part == "secrets" || part == "credentials"));
     secret_data
         || name == ".env"
         || name.starts_with(".env.")
@@ -34,8 +59,12 @@ pub fn is_closed_path(path: &str) -> bool {
         || name.starts_with("id_rsa")
         || name.starts_with("id_ed25519")
         || matches!(name, ".envrc" | ".npmrc" | ".netrc" | ".pypirc")
-        || ["env", "pem", "key", "p12", "pfx", "keystore", "jks", "ppk", "tfstate"].contains(&ext)
-        || p.split('/').any(|part| matches!(part, ".atlas" | ".git" | ".aws" | ".kube" | ".ssh"))
+        || [
+            "env", "pem", "key", "p12", "pfx", "keystore", "jks", "ppk", "tfstate",
+        ]
+        .contains(&ext)
+        || p.split('/')
+            .any(|part| matches!(part, ".atlas" | ".git" | ".aws" | ".kube" | ".ssh"))
         || p.ends_with(".docker/config.json")
 }
 
@@ -47,7 +76,17 @@ pub fn is_config_path(path: &str) -> bool {
         None => true,
         Some((_, ext)) => matches!(
             ext,
-            "yaml" | "yml" | "toml" | "ini" | "cfg" | "conf" | "properties" | "sh" | "txt" | "md" | "env"
+            "yaml"
+                | "yml"
+                | "toml"
+                | "ini"
+                | "cfg"
+                | "conf"
+                | "properties"
+                | "sh"
+                | "txt"
+                | "md"
+                | "env"
         ),
     }
 }
@@ -56,8 +95,17 @@ pub fn is_config_path(path: &str) -> bool {
 fn is_secret_name(ident: &str) -> bool {
     let lower = ident.to_lowercase().replace('-', "_");
     [
-        "password", "passwd", "db_pass", "secret", "api_key", "apikey", "private_key", "privatekey",
-        "authorization", "bearer", "access_key",
+        "password",
+        "passwd",
+        "db_pass",
+        "secret",
+        "api_key",
+        "apikey",
+        "private_key",
+        "privatekey",
+        "authorization",
+        "bearer",
+        "access_key",
     ]
     .iter()
     .any(|k| lower.contains(k))
@@ -108,7 +156,10 @@ fn assigned_to_secret(before: &str) -> bool {
         .trim_end_matches(['r', 'b', 'f', 'u', '#'])
         .trim_end();
     // значение по умолчанию: env.get("DB_PASSWORD") or "значение"
-    if let Some(rest) = [" or", "||", "??"].iter().find_map(|op| head.strip_suffix(op)) {
+    if let Some(rest) = [" or", "||", "??"]
+        .iter()
+        .find_map(|op| head.strip_suffix(op))
+    {
         return has_secret_name(rest);
     }
     if let Some(rest) = head.strip_suffix(',') {
@@ -118,7 +169,10 @@ fn assigned_to_secret(before: &str) -> bool {
         let called = rest[..start].trim_end_matches(['"', '\'']).ends_with('(');
         return called && is_secret_name(&rest[start..]);
     }
-    let Some(lhs) = head.strip_suffix("=>").or_else(|| head.strip_suffix(['=', ':'])) else {
+    let Some(lhs) = head
+        .strip_suffix("=>")
+        .or_else(|| head.strip_suffix(['=', ':']))
+    else {
         return false;
     };
     let lhs = lhs.trim_end_matches(['=', '!', ':', '+']);
@@ -165,7 +219,9 @@ fn url_passwords(line: &str) -> Vec<(usize, usize)> {
         .filter_map(|(pos, sep)| {
             let from = pos + sep.len();
             let rest = &line[from..];
-            let end = rest.find(|c: char| c == '/' || c.is_whitespace() || c == '"').unwrap_or(rest.len());
+            let end = rest
+                .find(|c: char| c == '/' || c.is_whitespace() || c == '"')
+                .unwrap_or(rest.len());
             let at = rest[..end].rfind('@')?;
             let colon = rest[..at].find(':')?;
             let password = &rest[colon + 1..at];
@@ -180,7 +236,11 @@ fn known_tokens(line: &str) -> Vec<(usize, usize)> {
     for prefix in TOKEN_PREFIXES {
         for (pos, _) in line.match_indices(prefix) {
             // `task-runner` не должен считаться ключом `sk-`
-            if line[..pos].chars().next_back().is_some_and(char::is_alphanumeric) {
+            if line[..pos]
+                .chars()
+                .next_back()
+                .is_some_and(char::is_alphanumeric)
+            {
                 continue;
             }
             let len = line[pos..]
@@ -191,7 +251,9 @@ fn known_tokens(line: &str) -> Vec<(usize, usize)> {
             // заглавные, либо это длинный сплошной хвост без дефисов
             let tail = &token[prefix.len()..];
             let random = prefix != "sk-"
-                || tail.chars().any(|c| c.is_ascii_digit() || c.is_ascii_uppercase())
+                || tail
+                    .chars()
+                    .any(|c| c.is_ascii_digit() || c.is_ascii_uppercase())
                 || (tail.len() >= 16 && !tail.contains('-'));
             let jwt = prefix != "eyJ" || token.matches('.').count() == 2;
             if len >= prefix.len() + 6 && random && jwt {
@@ -219,12 +281,21 @@ pub fn mask_line(line: &str, config: bool) -> String {
         }
     }
     let trimmed = line.trim_start();
-    let comment = ["//", "# ", "#!", "##", "/*", "* ", "-- "].iter().any(|m| trimmed.starts_with(m));
+    let comment = ["//", "# ", "#!", "##", "/*", "* ", "-- "]
+        .iter()
+        .any(|m| trimmed.starts_with(m));
     if config {
-        ranges.extend(unquoted_value(line, !trimmed.starts_with(['#', '-', 'e', 'E'])));
+        ranges.extend(unquoted_value(
+            line,
+            !trimmed.starts_with(['#', '-', 'e', 'E']),
+        ));
     } else if comment {
         ranges.extend(unquoted_value(line, false));
-    } else if let Some(at) = [" //", " # ", " /*"].iter().filter_map(|m| line.find(m)).min() {
+    } else if let Some(at) = [" //", " # ", " /*"]
+        .iter()
+        .filter_map(|m| line.find(m))
+        .min()
+    {
         ranges.extend(unquoted_value(&line[at..], false).map(|(s, e)| (s + at, e + at)));
     }
     if ranges.is_empty() {
@@ -253,15 +324,24 @@ pub fn mask_lines<'a>(lines: impl Iterator<Item = &'a str>, config: bool) -> Vec
     lines
         .map(|line| {
             if in_key {
-                let body = line.trim().trim_matches(['"', '\'', '+', ',']).trim_end_matches("\\n");
+                let body = line
+                    .trim()
+                    .trim_matches(['"', '\'', '+', ','])
+                    .trim_end_matches("\\n");
                 // тело ключа — base64 и заголовки; всё прочее означает, что ключ кончился
-                let base64 = body.chars().all(|c| c.is_ascii_alphanumeric() || "+/=".contains(c));
+                let base64 = body
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || "+/=".contains(c));
                 if line.contains("-----END") {
                     in_key = false;
                     return mask_line(line, config);
                 }
                 if base64 || body.starts_with("Proc-Type:") || body.starts_with("DEK-Info:") {
-                    return if body.is_empty() { line.to_string() } else { MASK.to_string() };
+                    return if body.is_empty() {
+                        line.to_string()
+                    } else {
+                        MASK.to_string()
+                    };
                 }
                 in_key = false;
             }
@@ -293,22 +373,58 @@ mod tests {
     #[test]
     fn masks_secrets_and_keeps_the_rest() {
         for (input, expected) in [
-            (r#"const TOKEN: &str = "hunter2hunter2";"#, r#"const TOKEN: &str = "***";"#),
-            (r#"    let password = "SuperSecret123"; // fn x("#, r#"    let password = "***"; // fn x("#),
-            (r#"const password = "SuperSecret123"; run(() => 1);"#, r#"const password = "***"; run(() => 1);"#),
-            (r#"const cfg = { "password": "SuperSecret123" };"#, r#"const cfg = { "password": "***" };"#),
-            (r#"const K = "sk-abcdefghijklmnop"; go(x => x);"#, r#"const K = "***"; go(x => x);"#),
-            (r#"const F: fn() = || {}; const API_KEY: &str = "abc123456789";"#, r#"const F: fn() = || {}; const API_KEY: &str = "***";"#),
-            (r#"connect(password="qwerty123")"#, r#"connect(password="***")"#),
-            (r#"cfg.set("api_key", "abc123456789")"#, r#"cfg.set("api_key", "***")"#),
-            (r#"if password == "letmein1" {"#, r#"if password == "***" {"#),
+            (
+                r#"const TOKEN: &str = "hunter2hunter2";"#,
+                r#"const TOKEN: &str = "***";"#,
+            ),
+            (
+                r#"    let password = "SuperSecret123"; // fn x("#,
+                r#"    let password = "***"; // fn x("#,
+            ),
+            (
+                r#"const password = "SuperSecret123"; run(() => 1);"#,
+                r#"const password = "***"; run(() => 1);"#,
+            ),
+            (
+                r#"const cfg = { "password": "SuperSecret123" };"#,
+                r#"const cfg = { "password": "***" };"#,
+            ),
+            (
+                r#"const K = "sk-abcdefghijklmnop"; go(x => x);"#,
+                r#"const K = "***"; go(x => x);"#,
+            ),
+            (
+                r#"const F: fn() = || {}; const API_KEY: &str = "abc123456789";"#,
+                r#"const F: fn() = || {}; const API_KEY: &str = "***";"#,
+            ),
+            (
+                r#"connect(password="qwerty123")"#,
+                r#"connect(password="***")"#,
+            ),
+            (
+                r#"cfg.set("api_key", "abc123456789")"#,
+                r#"cfg.set("api_key", "***")"#,
+            ),
+            (
+                r#"if password == "letmein1" {"#,
+                r#"if password == "***" {"#,
+            ),
             ("/// db password=SuperSecret123", "/// db password=***"),
-            (r#"headers = {"Authorization": "Bearer abc.def.ghi"}"#, r#"headers = {"Authorization": "***"}"#),
+            (
+                r#"headers = {"Authorization": "Bearer abc.def.ghi"}"#,
+                r#"headers = {"Authorization": "***"}"#,
+            ),
         ] {
             assert_eq!(mask_line(input, false), expected);
         }
-        assert_eq!(mask_line("  password: hunter2hunter2", true), "  password: ***");
-        assert_eq!(mask_line("export API_KEY=abc123456", true), "export API_KEY=***");
+        assert_eq!(
+            mask_line("  password: hunter2hunter2", true),
+            "  password: ***"
+        );
+        assert_eq!(
+            mask_line("export API_KEY=abc123456", true),
+            "export API_KEY=***"
+        );
     }
 
     #[test]
@@ -356,7 +472,13 @@ mod tests {
         let code = "if \"-----BEGIN PRIVATE KEY-----\" in s:\n    return True";
         assert_eq!(mask_text(code), code);
         assert!(!is_closed_path("crates/atlas-core/src/secrets.rs"));
-        for path in [".envrc", "prod.env", "secrets/db.yaml", "config/credentials.json", ".aws/config"] {
+        for path in [
+            ".envrc",
+            "prod.env",
+            "secrets/db.yaml",
+            "config/credentials.json",
+            ".aws/config",
+        ] {
             assert!(is_closed_path(path), "{path}");
         }
     }

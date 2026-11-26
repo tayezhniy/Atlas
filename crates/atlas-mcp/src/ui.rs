@@ -82,14 +82,18 @@ impl ToolRegistry {
             .count();
         let mut langs: BTreeMap<String, usize> = BTreeMap::new();
         for f in &files {
-            *langs.entry(f.lang.clone().unwrap_or_else(|| "other".into())).or_default() += 1;
+            *langs
+                .entry(f.lang.clone().unwrap_or_else(|| "other".into()))
+                .or_default() += 1;
         }
         let total_files = files.len();
         files.truncate(MAX_FILES);
 
         // Связи между файлами: вызовы и импорты, поднятые до уровня файла
-        let file_ids: HashMap<&str, String> =
-            files.iter().map(|f| (f.path.as_str(), f.id.to_string())).collect();
+        let file_ids: HashMap<&str, String> = files
+            .iter()
+            .map(|f| (f.path.as_str(), f.id.to_string()))
+            .collect();
         let node_paths: HashMap<Uuid, &str> = all.iter().map(|n| (n.id, n.path.as_str())).collect();
         let mut seen = HashSet::new();
         let mut edges = Vec::new();
@@ -125,7 +129,11 @@ impl ToolRegistry {
 
     fn ui_search(&self, args: &Value) -> Result<Value> {
         let query = str_arg(args, "query")?;
-        let limit = args.get("limit").and_then(Value::as_u64).unwrap_or(20).clamp(1, 100) as usize;
+        let limit = args
+            .get("limit")
+            .and_then(Value::as_u64)
+            .unwrap_or(20)
+            .clamp(1, 100) as usize;
         let items: Vec<Value> = atlas_core::search(&self.store, query, limit)?
             .into_iter()
             .enumerate()
@@ -183,7 +191,11 @@ impl ToolRegistry {
             "full" | "folded" => {
                 let slice: Vec<(usize, &str)> =
                     (start..=end).map(|n| (n, file[n - 1].as_str())).collect();
-                let slice = if mode == "folded" { crate::tools::fold_by_indent(slice) } else { slice };
+                let slice = if mode == "folded" {
+                    crate::tools::fold_by_indent(slice)
+                } else {
+                    slice
+                };
                 slice.into_iter().map(|(n, l)| (n, l.to_string())).collect()
             }
             other => bail!("неизвестный mode «{other}»"),
@@ -203,7 +215,11 @@ impl ToolRegistry {
         let node = self.ui_node(str_arg(args, "target")?)?;
         let side = |edges: Vec<Edge>, outgoing: bool| -> Result<Vec<Value>> {
             let mut out = Vec::new();
-            for e in edges.iter().filter(|e| e.kind != EdgeKind::Contains).take(100) {
+            for e in edges
+                .iter()
+                .filter(|e| e.kind != EdgeKind::Contains)
+                .take(100)
+            {
                 let other = if outgoing { e.dst_id } else { e.src_id };
                 if let Some(other) = self.store.get_node(&other)? {
                     out.push(json!({

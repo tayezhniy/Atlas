@@ -156,7 +156,11 @@ pub fn recompute_ranks(store: &Store) -> anyhow::Result<()> {
         }
     }
 
-    let max = rank.iter().cloned().fold(0.0f64, f64::max).max(f64::EPSILON);
+    let max = rank
+        .iter()
+        .cloned()
+        .fold(0.0f64, f64::max)
+        .max(f64::EPSILON);
     for (node, value) in nodes.iter().zip(rank.iter()) {
         let penalty = match node.kind {
             NodeKind::Test => 0.6,

@@ -63,7 +63,9 @@ impl Tool {
             Tool::Outline => "Сигнатуры и строки всех символов одного файла.",
             Tool::Read => "Код символа или диапазона строк. mode: signature|doc|folded|full.",
             Tool::Neighbors => "Кто вызывает символ и что вызывает он; импорты файла.",
-            Tool::ContextFor => "Всё для работы с символом за один вызов: код, зависимости, вызывающие.",
+            Tool::ContextFor => {
+                "Всё для работы с символом за один вызов: код, зависимости, вызывающие."
+            }
             Tool::Status => "Состояние индекса: свежесть, число узлов и связей.",
         }
     }
@@ -169,7 +171,10 @@ impl ToolContext {
     }
 
     fn usize_arg(&self, key: &str) -> Option<usize> {
-        self.args.get(key).and_then(Value::as_u64).map(|n| n as usize)
+        self.args
+            .get(key)
+            .and_then(Value::as_u64)
+            .map(|n| n as usize)
     }
 }
 
@@ -254,7 +259,10 @@ impl ToolRegistry {
         if let Some(dir) = ctx.str_arg("path") {
             let prefix = format!("{}/", normalize_rel(&dir).trim_end_matches('/'));
             lines.push(format!("## Каталог {prefix}"));
-            let mut in_dir: Vec<&Node> = files.iter().filter(|f| f.path.starts_with(&prefix)).collect();
+            let mut in_dir: Vec<&Node> = files
+                .iter()
+                .filter(|f| f.path.starts_with(&prefix))
+                .collect();
             if in_dir.is_empty() {
                 bail!("каталог «{dir}» не найден в индексе; вызовите overview без path");
             }
@@ -265,8 +273,15 @@ impl ToolRegistry {
                     .get(&f.path)
                     .map(|v| v.iter().take(8).map(|s| s.name.as_str()).collect())
                     .unwrap_or_default();
-                let extra = symbols.get(&f.path).map(|v| v.len().saturating_sub(8)).unwrap_or(0);
-                let tail = if extra > 0 { format!(" …+{extra}") } else { String::new() };
+                let extra = symbols
+                    .get(&f.path)
+                    .map(|v| v.len().saturating_sub(8))
+                    .unwrap_or(0);
+                let tail = if extra > 0 {
+                    format!(" …+{extra}")
+                } else {
+                    String::new()
+                };
                 lines.push(format!(
                     "{} ({}, ~{} ток.){}{}{}",
                     f.path,
@@ -281,7 +296,9 @@ impl ToolRegistry {
             let total_symbols: usize = symbols.values().map(Vec::len).sum();
             let mut langs: BTreeMap<String, usize> = BTreeMap::new();
             for f in &files {
-                *langs.entry(f.lang.clone().unwrap_or_else(|| "?".into())).or_default() += 1;
+                *langs
+                    .entry(f.lang.clone().unwrap_or_else(|| "?".into()))
+                    .or_default() += 1;
             }
             let langs_text: Vec<String> = langs.iter().map(|(l, n)| format!("{l} {n}")).collect();
             lines.push(format!("## Карта проекта: {}", ctx.project_root));
@@ -303,7 +320,11 @@ impl ToolRegistry {
             };
             let mut depth = 1;
             let distinct = |d: usize| -> usize {
-                files.iter().map(|f| group_of(&f.path, d)).collect::<std::collections::BTreeSet<_>>().len()
+                files
+                    .iter()
+                    .map(|f| group_of(&f.path, d))
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .len()
             };
             if distinct(1) < 4 && distinct(2) > distinct(1) {
                 depth = 2;
@@ -327,7 +348,8 @@ impl ToolRegistry {
                     top.join(", ")
                 ));
             }
-            lines.push("Дальше: overview{path}, search{query}, outline{path}, read{symbol}.".into());
+            lines
+                .push("Дальше: overview{path}, search{query}, outline{path}, read{symbol}.".into());
         }
 
         let (text, shown) = truncate_to_budget(&lines, budget(ctx, &Tool::Overview));
@@ -337,7 +359,9 @@ impl ToolRegistry {
     // --- search: полнотекстовый поиск (FTS5) ---
 
     fn search(&self, ctx: &ToolContext) -> Result<Body> {
-        let query = ctx.str_arg("query").ok_or_else(|| anyhow!("нужен параметр query"))?;
+        let query = ctx
+            .str_arg("query")
+            .ok_or_else(|| anyhow!("нужен параметр query"))?;
         let limit = ctx.usize_arg("limit").unwrap_or(10).clamp(1, 50);
         // Используем ранжированный поиск из atlas-core (FTS5 + бонус за ранг/тип символа)
         let found: Vec<atlas_store::schema::Node> = atlas_core::search(&self.store, &query, limit)?
@@ -345,21 +369,34 @@ impl ToolRegistry {
             .map(|sr| sr.node)
             .collect();
         if found.is_empty() {
-            return Ok((format!("По запросу «{query}» ничего не найдено. Попробуйте часть имени или overview."), vec![]));
+            return Ok((
+                format!(
+                    "По запросу «{query}» ничего не найдено. Попробуйте часть имени или overview."
+                ),
+                vec![],
+            ));
         }
         let ids = found.iter().map(|n| n.id.to_string()).collect();
         let mut lines: Vec<String> = found.iter().map(symbol_line).collect();
         if found.len() == limit {
-            lines.push(format!("показано {limit}; уточните запрос или увеличьте limit"));
+            lines.push(format!(
+                "показано {limit}; уточните запрос или увеличьте limit"
+            ));
         }
         let (text, shown) = truncate_to_budget(&lines, budget(ctx, &Tool::Search));
-        Ok((with_omitted(text, shown, lines.len(), "уточните запрос"), ids))
+        Ok((
+            with_omitted(text, shown, lines.len(), "уточните запрос"),
+            ids,
+        ))
     }
 
     // --- outline: символы одного файла (L2) ---
 
     fn outline(&self, ctx: &ToolContext) -> Result<Body> {
-        let path = normalize_rel(&ctx.str_arg("path").ok_or_else(|| anyhow!("нужен параметр path"))?);
+        let path = normalize_rel(
+            &ctx.str_arg("path")
+                .ok_or_else(|| anyhow!("нужен параметр path"))?,
+        );
         let nodes = self.store.nodes_in_file(&path)?;
         if nodes.is_empty() {
             bail!("файл «{path}» не найден в индексе; найдите путь через search");
@@ -369,7 +406,11 @@ impl ToolRegistry {
         for n in &nodes {
             ids.push(n.id.to_string());
             if n.kind == NodeKind::File {
-                lines.push(format!("{}, ~{} ток.", n.lang.as_deref().unwrap_or("?"), n.tokens_est));
+                lines.push(format!(
+                    "{}, ~{} ток.",
+                    n.lang.as_deref().unwrap_or("?"),
+                    n.tokens_est
+                ));
                 continue;
             }
             lines.push(format!(
@@ -380,11 +421,17 @@ impl ToolRegistry {
                 first_line(n.signature.as_deref().unwrap_or(&n.name), 160)
             ));
             if let Some(doc) = n.doc_summary.as_deref().filter(|d| !d.is_empty()) {
-                lines.push(format!("    # {}", first_line(&mask_lines(doc.lines().take(1), true).join(""), 140)));
+                lines.push(format!(
+                    "    # {}",
+                    first_line(&mask_lines(doc.lines().take(1), true).join(""), 140)
+                ));
             }
         }
         let (text, shown) = truncate_to_budget(&lines, budget(ctx, &Tool::Outline));
-        Ok((with_omitted(text, shown, lines.len(), "читайте символы через read"), ids))
+        Ok((
+            with_omitted(text, shown, lines.len(), "читайте символы через read"),
+            ids,
+        ))
     }
 
     // --- read: код символа или диапазона (L3) ---
@@ -422,7 +469,10 @@ impl ToolRegistry {
             if mode == "signature" || mode == "doc" {
                 bail!("mode {mode} работает только с symbol");
             }
-            let path = normalize_rel(&ctx.str_arg("path").ok_or_else(|| anyhow!("нужен symbol или path"))?);
+            let path = normalize_rel(
+                &ctx.str_arg("path")
+                    .ok_or_else(|| anyhow!("нужен symbol или path"))?,
+            );
             (path, 1, usize::MAX, None)
         };
 
@@ -439,7 +489,9 @@ impl ToolRegistry {
             bail!("в файле {path} всего {total} строк, а start_line = {start}");
         }
         let end = end.min(total);
-        let mut slice: Vec<(usize, &str)> = (start..=end).map(|n| (n, file_lines[n - 1].as_str())).collect();
+        let mut slice: Vec<(usize, &str)> = (start..=end)
+            .map(|n| (n, file_lines[n - 1].as_str()))
+            .collect();
         if mode == "folded" {
             slice = fold_by_indent(slice);
         }
@@ -467,35 +519,45 @@ impl ToolRegistry {
         let node = if ctx.str_arg("symbol").is_some() {
             self.resolve_symbol(ctx)?.0
         } else {
-            let path = normalize_rel(&ctx.str_arg("path").ok_or_else(|| anyhow!("нужен symbol или path"))?);
+            let path = normalize_rel(
+                &ctx.str_arg("path")
+                    .ok_or_else(|| anyhow!("нужен symbol или path"))?,
+            );
             self.store
                 .find_file_node_by_path(&path)?
                 .ok_or_else(|| anyhow!("файл «{path}» не найден в индексе"))?
         };
 
         let mut ids = vec![node.id.to_string()];
-        let mut lines = vec![format!("## {} ({}, {}:{})", node.name, node.kind, node.path, node.line_start.unwrap_or(0))];
-        let mut add = |arrow: &str, edges: Vec<atlas_store::schema::Edge>, outgoing: bool| -> Result<()> {
-            for edge in edges.iter().take(40) {
-                if edge.kind == EdgeKind::Contains {
-                    continue;
+        let mut lines = vec![format!(
+            "## {} ({}, {}:{})",
+            node.name,
+            node.kind,
+            node.path,
+            node.line_start.unwrap_or(0)
+        )];
+        let mut add =
+            |arrow: &str, edges: Vec<atlas_store::schema::Edge>, outgoing: bool| -> Result<()> {
+                for edge in edges.iter().take(40) {
+                    if edge.kind == EdgeKind::Contains {
+                        continue;
+                    }
+                    let other_id = if outgoing { edge.dst_id } else { edge.src_id };
+                    if let Some(other) = self.store.get_node(&other_id)? {
+                        ids.push(other.id.to_string());
+                        lines.push(format!(
+                            "{} {} {}\t{}:{}\t[{}]",
+                            edge.kind,
+                            arrow,
+                            other.name,
+                            other.path,
+                            other.line_start.unwrap_or(0),
+                            edge.confidence
+                        ));
+                    }
                 }
-                let other_id = if outgoing { edge.dst_id } else { edge.src_id };
-                if let Some(other) = self.store.get_node(&other_id)? {
-                    ids.push(other.id.to_string());
-                    lines.push(format!(
-                        "{} {} {}\t{}:{}\t[{}]",
-                        edge.kind,
-                        arrow,
-                        other.name,
-                        other.path,
-                        other.line_start.unwrap_or(0),
-                        edge.confidence
-                    ));
-                }
-            }
-            Ok(())
-        };
+                Ok(())
+            };
         add("→", self.store.outgoing_edges(&node.id)?, true)?;
         add("←", self.store.incoming_edges(&node.id)?, false)?;
         if lines.len() == 1 {
@@ -514,7 +576,13 @@ impl ToolRegistry {
         if let Some(note) = note {
             lines.push(note);
         }
-        lines.push(format!("## {} ({}, {}:{})", node.name, node.kind, node.path, node.line_start.unwrap_or(0)));
+        lines.push(format!(
+            "## {} ({}, {}:{})",
+            node.name,
+            node.kind,
+            node.path,
+            node.line_start.unwrap_or(0)
+        ));
 
         let outgoing: Vec<Node> = self
             .store
@@ -530,7 +598,8 @@ impl ToolRegistry {
             .filter(|e| e.kind == EdgeKind::Calls)
             .filter_map(|e| self.store.get_node(&e.src_id).ok().flatten())
             .collect();
-        let (tests, callers): (Vec<&Node>, Vec<&Node>) = incoming.iter().partition(|n| is_test_path(&n.path));
+        let (tests, callers): (Vec<&Node>, Vec<&Node>) =
+            incoming.iter().partition(|n| is_test_path(&n.path));
 
         // Сначала короткие списки связей, потом код: код обрежется по бюджету, а карта связей останется
         if !outgoing.is_empty() {
@@ -557,9 +626,12 @@ impl ToolRegistry {
 
         let file_lines = read_project_lines(&ctx.project_root, &node.path)?;
         let start = node.line_start.unwrap_or(1).max(1) as usize;
-        let end = (node.line_end.unwrap_or(start as i32).max(start as i32) as usize).min(file_lines.len());
+        let end = (node.line_end.unwrap_or(start as i32).max(start as i32) as usize)
+            .min(file_lines.len());
         if start <= end {
-            let slice: Vec<(usize, &str)> = (start..=end).map(|n| (n, file_lines[n - 1].as_str())).collect();
+            let slice: Vec<(usize, &str)> = (start..=end)
+                .map(|n| (n, file_lines[n - 1].as_str()))
+                .collect();
             // Тело символа в свёрнутом виде; если и так не влезает, обрезка ниже
             let folded = fold_by_indent(slice);
             lines.push(format!("{PROJECT_DATA_NOTE} {}:{start}-{end}", node.path));
@@ -567,7 +639,15 @@ impl ToolRegistry {
         }
 
         let (text, shown) = truncate_to_budget(&lines, budget(ctx, &Tool::ContextFor));
-        Ok((with_omitted(text, shown, lines.len(), "запросите read{symbol, start_line, end_line}"), ids))
+        Ok((
+            with_omitted(
+                text,
+                shown,
+                lines.len(),
+                "запросите read{symbol, start_line, end_line}",
+            ),
+            ids,
+        ))
     }
 
     // --- status: состояние индекса ---
@@ -576,7 +656,10 @@ impl ToolRegistry {
         let mut text = String::from("## Состояние индекса\n\n");
         match self.store.project_info()? {
             Some((root, indexed)) => {
-                text.push_str(&format!("Проект: {root}\nПоследняя индексация: {}\n", indexed.unwrap_or_else(|| "—".into())));
+                text.push_str(&format!(
+                    "Проект: {root}\nПоследняя индексация: {}\n",
+                    indexed.unwrap_or_else(|| "—".into())
+                ));
                 text.push_str("Статус: fresh\n");
             }
             None => text.push_str("Проект ещё не индексировался. Статус: empty\n"),
@@ -620,7 +703,9 @@ impl ToolRegistry {
     /// Находит символ по имени (и необязательному пути). Если кандидатов несколько,
     /// берёт самый важный и сообщает об остальных.
     fn resolve_symbol(&self, ctx: &ToolContext) -> Result<(Node, Option<String>)> {
-        let name = ctx.str_arg("symbol").ok_or_else(|| anyhow!("нужен параметр symbol"))?;
+        let name = ctx
+            .str_arg("symbol")
+            .ok_or_else(|| anyhow!("нужен параметр symbol"))?;
         let mut candidates = self.store.symbols_by_name(&name)?;
         if let Some(path) = ctx.str_arg("path") {
             let path = normalize_rel(&path);
@@ -642,7 +727,12 @@ impl ToolRegistry {
             }
             1 => Ok((candidates.remove(0), None)),
             n => {
-                let others: Vec<String> = candidates.iter().skip(1).take(4).map(|c| c.path.clone()).collect();
+                let others: Vec<String> = candidates
+                    .iter()
+                    .skip(1)
+                    .take(4)
+                    .map(|c| c.path.clone())
+                    .collect();
                 let note = format!(
                     "найдено {n} символов «{name}»; взят {}; другие: {} — уточните path",
                     candidates[0].path,
@@ -657,15 +747,27 @@ impl ToolRegistry {
 fn budget(ctx: &ToolContext, tool: &Tool) -> usize {
     // max_tokens из аргументов вызова приоритетнее; бюджет из настроек — дефолт
     let name: &str = tool.name();
-    let default_budget = ctx.tool_budgets.get(name).copied().unwrap_or_else(|| tool.default_budget());
+    let default_budget = ctx
+        .tool_budgets
+        .get(name)
+        .copied()
+        .unwrap_or_else(|| tool.default_budget());
     let requested = ctx.usize_arg("max_tokens").unwrap_or(default_budget);
-    let cap = if ctx.max_tokens == 0 { usize::MAX } else { ctx.max_tokens };
+    let cap = if ctx.max_tokens == 0 {
+        usize::MAX
+    } else {
+        ctx.max_tokens
+    };
     requested.min(cap).max(50)
 }
 
 fn with_omitted(mut text: String, shown: usize, total: usize, hint: &str) -> String {
     if shown < total {
-        text.push_str(&format!("[показано {shown} из {total} строк{}{}]\n", if hint.is_empty() { "" } else { "; " }, hint));
+        text.push_str(&format!(
+            "[показано {shown} из {total} строк{}{}]\n",
+            if hint.is_empty() { "" } else { "; " },
+            hint
+        ));
     }
     text
 }
@@ -719,9 +821,11 @@ pub(crate) fn read_project_lines(root: &str, rel_path: &str) -> Result<Vec<Strin
     if is_closed_path(rel_path) {
         bail!("путь «{rel_path}» закрыт для чтения через MCP (секрет или служебный каталог)");
     }
-    let root = std::fs::canonicalize(root).map_err(|e| anyhow!("корень проекта недоступен: {e}"))?;
+    let root =
+        std::fs::canonicalize(root).map_err(|e| anyhow!("корень проекта недоступен: {e}"))?;
     let full: PathBuf = root.join(rel_path);
-    let canonical = std::fs::canonicalize(&full).map_err(|_| anyhow!("файл «{rel_path}» не найден на диске"))?;
+    let canonical = std::fs::canonicalize(&full)
+        .map_err(|_| anyhow!("файл «{rel_path}» не найден на диске"))?;
     if !canonical.starts_with(&root) {
         bail!("путь «{rel_path}» вне проекта");
     }
@@ -730,7 +834,8 @@ pub(crate) fn read_project_lines(root: &str, rel_path: &str) -> Result<Vec<Strin
     if is_closed_path(&target) {
         bail!("путь «{rel_path}» закрыт для чтения через MCP (ссылка на секрет)");
     }
-    let content = std::fs::read_to_string(&canonical).map_err(|e| anyhow!("не удалось прочитать «{rel_path}»: {e}"))?;
+    let content = std::fs::read_to_string(&canonical)
+        .map_err(|e| anyhow!("не удалось прочитать «{rel_path}»: {e}"))?;
     Ok(mask_lines(content.lines(), is_config_path(&target)))
 }
 
@@ -743,7 +848,11 @@ fn indent_of(line: &str) -> usize {
 
 /// Сворачивает глубоко вложенные строки в одну `...` (режим folded): остаётся каркас символа.
 pub(crate) fn fold_by_indent(lines: Vec<(usize, &str)>) -> Vec<(usize, &str)> {
-    let Some(base) = lines.iter().find(|(_, l)| !l.trim().is_empty()).map(|(_, l)| indent_of(l)) else {
+    let Some(base) = lines
+        .iter()
+        .find(|(_, l)| !l.trim().is_empty())
+        .map(|(_, l)| indent_of(l))
+    else {
         return lines;
     };
     let mut out = Vec::new();
@@ -770,7 +879,14 @@ mod tests {
     use atlas_store::schema::{Confidence, Edge};
     use uuid::Uuid;
 
-    fn node(kind: NodeKind, path: &str, name: &str, start: Option<i32>, end: Option<i32>, sig: Option<&str>) -> Node {
+    fn node(
+        kind: NodeKind,
+        path: &str,
+        name: &str,
+        start: Option<i32>,
+        end: Option<i32>,
+        sig: Option<&str>,
+    ) -> Node {
         Node {
             id: Uuid::new_v4(),
             kind,
@@ -797,14 +913,39 @@ mod tests {
             "def helper():\n    return 1\n\ndef main():\n    x = helper()\n    if x:\n        deep()\n    return x\n",
         )
         .unwrap();
-        std::fs::write(dir.path().join("test_a.py"), "def test_main():\n    main()\n").unwrap();
+        std::fs::write(
+            dir.path().join("test_a.py"),
+            "def test_main():\n    main()\n",
+        )
+        .unwrap();
 
         let store = Store::open(dir.path().join("idx.db")).unwrap();
         let f_a = node(NodeKind::File, "a.py", "a.py", None, None, None);
-        let helper = node(NodeKind::Function, "a.py", "helper", Some(1), Some(2), Some("def helper()"));
-        let main = node(NodeKind::Function, "a.py", "main", Some(4), Some(8), Some("def main()"));
+        let helper = node(
+            NodeKind::Function,
+            "a.py",
+            "helper",
+            Some(1),
+            Some(2),
+            Some("def helper()"),
+        );
+        let main = node(
+            NodeKind::Function,
+            "a.py",
+            "main",
+            Some(4),
+            Some(8),
+            Some("def main()"),
+        );
         let f_t = node(NodeKind::File, "test_a.py", "test_a.py", None, None, None);
-        let t = node(NodeKind::Function, "test_a.py", "test_main", Some(1), Some(2), Some("def test_main()"));
+        let t = node(
+            NodeKind::Function,
+            "test_a.py",
+            "test_main",
+            Some(1),
+            Some(2),
+            Some("def test_main()"),
+        );
         for n in [&f_a, &helper, &main, &f_t, &t] {
             store.upsert_node(n).unwrap();
         }
@@ -828,7 +969,8 @@ mod tests {
             root.into(),
             HashMap::new(),
             Vec::new(),
-        ).with_args(args);
+        )
+        .with_args(args);
         reg.execute(&tool, &ctx)
     }
 
@@ -879,7 +1021,11 @@ mod tests {
     fn search_finds_symbol_by_prefix() -> Result<()> {
         let (_d, mut reg, root) = fixture();
         let r = run(&mut reg, &root, Tool::Search, json!({"query": "help"}))?;
-        assert!(r.text.contains("a.py:1\tfunction\tdef helper()"), "{}", r.text);
+        assert!(
+            r.text.contains("a.py:1\tfunction\tdef helper()"),
+            "{}",
+            r.text
+        );
         Ok(())
     }
 
@@ -888,9 +1034,24 @@ mod tests {
         let (_d, mut reg, root) = fixture();
         let full = run(&mut reg, &root, Tool::Read, json!({"symbol": "main"}))?.text;
         assert!(full.contains("4\tdef main():") && full.contains("7\t        deep()"));
-        let folded = run(&mut reg, &root, Tool::Read, json!({"symbol": "main", "mode": "folded"}))?.text;
-        assert!(folded.contains("...") && !folded.contains("deep()"), "{folded}");
-        let sig = run(&mut reg, &root, Tool::Read, json!({"symbol": "main", "mode": "signature"}))?.text;
+        let folded = run(
+            &mut reg,
+            &root,
+            Tool::Read,
+            json!({"symbol": "main", "mode": "folded"}),
+        )?
+        .text;
+        assert!(
+            folded.contains("...") && !folded.contains("deep()"),
+            "{folded}"
+        );
+        let sig = run(
+            &mut reg,
+            &root,
+            Tool::Read,
+            json!({"symbol": "main", "mode": "signature"}),
+        )?
+        .text;
         assert!(sig.contains("def main()") && !sig.contains("return x"));
         Ok(())
     }
@@ -898,7 +1059,13 @@ mod tests {
     #[test]
     fn read_rejects_path_outside_project() {
         let (_d, mut reg, root) = fixture();
-        let err = run(&mut reg, &root, Tool::Read, json!({"path": "../../../etc/passwd"})).unwrap_err();
+        let err = run(
+            &mut reg,
+            &root,
+            Tool::Read,
+            json!({"path": "../../../etc/passwd"}),
+        )
+        .unwrap_err();
         assert!(!err.to_string().is_empty());
         let abs = run(&mut reg, &root, Tool::Read, json!({"path": "/etc/passwd"}));
         assert!(abs.is_err(), "абсолютный путь не должен выходить за проект");
@@ -907,12 +1074,25 @@ mod tests {
     #[test]
     fn secrets_are_masked_in_every_tool() -> Result<()> {
         let (dir, mut reg, root) = fixture();
-        std::fs::write(dir.path().join("s.js"), "  const password = \"SuperSecret123\"; run(() => 1);\n")?;
-        let secret = node(NodeKind::Constant, "s.js", "password", Some(1), Some(1), Some("password = \"SuperSecret123\""));
+        std::fs::write(
+            dir.path().join("s.js"),
+            "  const password = \"SuperSecret123\"; run(() => 1);\n",
+        )?;
+        let secret = node(
+            NodeKind::Constant,
+            "s.js",
+            "password",
+            Some(1),
+            Some(1),
+            Some("password = \"SuperSecret123\""),
+        );
         reg.store.upsert_node(&secret)?;
         for (tool, args) in [
             (Tool::Read, json!({"path": "s.js"})),
-            (Tool::Read, json!({"symbol": "password", "mode": "signature"})),
+            (
+                Tool::Read,
+                json!({"symbol": "password", "mode": "signature"}),
+            ),
             (Tool::Outline, json!({"path": "s.js"})),
             (Tool::Search, json!({"query": "password"})),
             (Tool::ContextFor, json!({"symbol": "password"})),
@@ -921,7 +1101,10 @@ mod tests {
             assert!(!text.contains("SuperSecret123"), "{tool}: {text}");
         }
         let read = run(&mut reg, &root, Tool::Read, json!({"path": "s.js"}))?.text;
-        assert!(read.contains("1\t  const password = \"***\"; run"), "{read}");
+        assert!(
+            read.contains("1\t  const password = \"***\"; run"),
+            "{read}"
+        );
         Ok(())
     }
 
@@ -938,7 +1121,12 @@ mod tests {
     #[test]
     fn read_respects_budget() -> Result<()> {
         let (_d, mut reg, root) = fixture();
-        let r = run(&mut reg, &root, Tool::Read, json!({"path": "a.py", "max_tokens": 50}))?;
+        let r = run(
+            &mut reg,
+            &root,
+            Tool::Read,
+            json!({"path": "a.py", "max_tokens": 50}),
+        )?;
         assert!(r.text.contains("[показано"), "{}", r.text);
         Ok(())
     }
@@ -947,16 +1135,24 @@ mod tests {
     fn neighbors_and_context_for() -> Result<()> {
         let (_d, mut reg, root) = fixture();
         let n = run(&mut reg, &root, Tool::Neighbors, json!({"symbol": "main"}))?.text;
-        assert!(n.contains("calls → helper") && n.contains("calls ← test_main"), "{n}");
+        assert!(
+            n.contains("calls → helper") && n.contains("calls ← test_main"),
+            "{n}"
+        );
         let c = run(&mut reg, &root, Tool::ContextFor, json!({"symbol": "main"}))?.text;
-        assert!(c.contains("вызывает:") && c.contains("тесты:") && c.contains("def main()"), "{c}");
+        assert!(
+            c.contains("вызывает:") && c.contains("тесты:") && c.contains("def main()"),
+            "{c}"
+        );
         Ok(())
     }
 
     #[test]
     fn unknown_symbol_suggests_similar() {
         let (_d, mut reg, root) = fixture();
-        let err = run(&mut reg, &root, Tool::Read, json!({"symbol": "helpe"})).unwrap_err().to_string();
+        let err = run(&mut reg, &root, Tool::Read, json!({"symbol": "helpe"}))
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("не найден"));
     }
 
@@ -964,7 +1160,11 @@ mod tests {
     fn calls_are_logged() -> Result<()> {
         let (_d, mut reg, root) = fixture();
         run(&mut reg, &root, Tool::Status, json!({}))?;
-        let n: i64 = reg.store.conn().query_row("SELECT COUNT(*) FROM call_log WHERE tool = 'status'", [], |r| r.get(0))?;
+        let n: i64 = reg.store.conn().query_row(
+            "SELECT COUNT(*) FROM call_log WHERE tool = 'status'",
+            [],
+            |r| r.get(0),
+        )?;
         assert_eq!(n, 1);
         Ok(())
     }

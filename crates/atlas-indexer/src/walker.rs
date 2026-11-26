@@ -98,7 +98,7 @@ impl ProjectWalker {
 
         Ok(files)
     }
-    
+
     /// Проверяет, соответствует ли путь пользовательским исключениям (glob).
     fn is_custom_excluded(&self, rel: &str) -> bool {
         use glob::Pattern;
@@ -165,12 +165,18 @@ fn is_always_excluded(rel: &str) -> bool {
 
     // Каталоги зависимостей и сборки (на случай, если .gitignore отсутствует)
     const EXCLUDED_DIRS: [&str; 10] = [
-        "node_modules", "vendor", "target", "dist", "build", ".git", ".atlas", ".venv", "venv",
+        "node_modules",
+        "vendor",
+        "target",
+        "dist",
+        "build",
+        ".git",
+        ".atlas",
+        ".venv",
+        "venv",
         "coverage",
     ];
-    lower
-        .split('/')
-        .any(|part| EXCLUDED_DIRS.contains(&part))
+    lower.split('/').any(|part| EXCLUDED_DIRS.contains(&part))
 }
 
 /// Определяет язык по расширению файла.

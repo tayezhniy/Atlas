@@ -16,15 +16,14 @@ impl ProjectMap {
     /// Карта проекта: языки, группы каталогов, ключевые файлы и хабы.
     pub fn render(&self, store: &Store) -> anyhow::Result<String> {
         let files = store.nodes_of_kinds(&[NodeKind::File])?;
-        let symbols = store
-            .nodes_of_kinds(&[
-                NodeKind::Class,
-                NodeKind::Interface,
-                NodeKind::Function,
-                NodeKind::Method,
-                NodeKind::Constant,
-                NodeKind::Type,
-            ])?;
+        let symbols = store.nodes_of_kinds(&[
+            NodeKind::Class,
+            NodeKind::Interface,
+            NodeKind::Function,
+            NodeKind::Method,
+            NodeKind::Constant,
+            NodeKind::Type,
+        ])?;
         let mut langs: BTreeMap<String, usize> = BTreeMap::new();
         for f in &files {
             *langs

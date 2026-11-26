@@ -10,7 +10,12 @@ pub fn recent_calls(store: &Store, limit: usize) -> anyhow::Result<Vec<String>> 
         .conn()
         .prepare("SELECT time, tool, tokens_out FROM call_log ORDER BY id DESC LIMIT ?1")?;
     let rows = stmt.query_map([limit as i64], |r| {
-        Ok(format!("{}  {}  {}", r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?))
+        Ok(format!(
+            "{}  {}  {}",
+            r.get::<_, String>(0)?,
+            r.get::<_, String>(1)?,
+            r.get::<_, i64>(2)?
+        ))
     })?;
     let mut out = Vec::new();
     for r in rows {

@@ -1,6 +1,4 @@
-use crate::parser::{
-    Call, Heritage, Import, ParsedFile, Symbol, SymbolKind, Visibility,
-};
+use crate::parser::{Call, Heritage, Import, ParsedFile, Symbol, SymbolKind, Visibility};
 use anyhow::{Context, Result};
 use std::path::Path;
 use tree_sitter::Parser;
@@ -18,9 +16,7 @@ impl TreeSitterParser {
 
     /// Определяет язык по расширению файла.
     pub fn detect_language(path: &str) -> Option<&'static str> {
-        let ext = Path::new(path)
-            .extension()
-            .and_then(|e| e.to_str())?;
+        let ext = Path::new(path).extension().and_then(|e| e.to_str())?;
         match ext {
             "rs" => Some("rust"),
             "py" => Some("python"),
@@ -142,11 +138,7 @@ where
 // Извлечение символов
 // ---------------------------------------------------------------------------
 
-fn extract_symbols(
-    node: &tree_sitter::Node,
-    source: &[u8],
-    lang: &str,
-) -> Result<Vec<Symbol>> {
+fn extract_symbols(node: &tree_sitter::Node, source: &[u8], lang: &str) -> Result<Vec<Symbol>> {
     match lang {
         "rust" => extract_symbols_rust(node, source),
         "python" => extract_symbols_python(node, source),
@@ -400,11 +392,7 @@ fn extract_symbols_prisma(node: &tree_sitter::Node, source: &[u8]) -> Result<Vec
     collect_symbols_by_type(
         node,
         source,
-        &[
-            "model_declaration",
-            "enum_declaration",
-            "type_declaration",
-        ],
+        &["model_declaration", "enum_declaration", "type_declaration"],
         &mut symbols,
         "prisma",
     )?;
@@ -564,7 +552,10 @@ pub(crate) fn extract_doc_comment(node: &tree_sitter::Node, source: &[u8]) -> Op
 
 /// Первая строка тела Python-функции/класса, если это строковый литерал.
 fn python_docstring(node: &tree_sitter::Node, source: &[u8]) -> Option<String> {
-    if !matches!(node.kind(), "function_definition" | "class_definition" | "async_function_definition") {
+    if !matches!(
+        node.kind(),
+        "function_definition" | "class_definition" | "async_function_definition"
+    ) {
         return None;
     }
     let body = node.child_by_field_name("body")?;
@@ -623,7 +614,11 @@ fn clean_doc_text(text: &str) -> String {
 }
 
 /// Извлекает видимость символа.
-pub(crate) fn extract_visibility(node: &tree_sitter::Node, source: &[u8], lang: &str) -> Visibility {
+pub(crate) fn extract_visibility(
+    node: &tree_sitter::Node,
+    source: &[u8],
+    lang: &str,
+) -> Visibility {
     let first_line = extract_signature(node, source).unwrap_or_default();
     match lang {
         "rust" => {
@@ -631,7 +626,10 @@ pub(crate) fn extract_visibility(node: &tree_sitter::Node, source: &[u8], lang: 
                 .split(&extract_name(node, source, lang).unwrap_or_default())
                 .next()
                 .unwrap_or("");
-            if before_name.split_whitespace().any(|w| w == "pub" || w.starts_with("pub(")) {
+            if before_name
+                .split_whitespace()
+                .any(|w| w == "pub" || w.starts_with("pub("))
+            {
                 Visibility::Public
             } else {
                 Visibility::Private
@@ -710,11 +708,17 @@ pub(crate) fn extract_visibility(node: &tree_sitter::Node, source: &[u8], lang: 
             let t = first_line.trim_start();
             if t.contains(" private ") || t.starts_with("private ") {
                 Visibility::Private
-            } else if t.contains(" fileprivate ") || t.starts_with("fileprivate ")
-                || t.contains(" internal ") || t.starts_with("internal ") {
+            } else if t.contains(" fileprivate ")
+                || t.starts_with("fileprivate ")
+                || t.contains(" internal ")
+                || t.starts_with("internal ")
+            {
                 Visibility::Package
-            } else if t.contains(" public ") || t.starts_with("public ")
-                || t.contains(" open ") || t.starts_with("open ") {
+            } else if t.contains(" public ")
+                || t.starts_with("public ")
+                || t.contains(" open ")
+                || t.starts_with("open ")
+            {
                 Visibility::Public
             } else {
                 Visibility::Package // default is internal
@@ -777,53 +781,85 @@ pub(crate) fn extract_visibility(node: &tree_sitter::Node, source: &[u8], lang: 
 fn map_kind(kind: &str, _lang: &str) -> SymbolKind {
     match kind {
         // Functions
-        "function_item" | "function_definition" | "function_declaration"
-        | "async_function_definition" | "arrow_function" | "function_expression"
-        | "constructor_declaration" | "method_declaration" | "function_method_declaration"
-        | "function_signature" | "local_function" => SymbolKind::Function,
-        
+        "function_item"
+        | "function_definition"
+        | "function_declaration"
+        | "async_function_definition"
+        | "arrow_function"
+        | "function_expression"
+        | "constructor_declaration"
+        | "method_declaration"
+        | "function_method_declaration"
+        | "function_signature"
+        | "local_function" => SymbolKind::Function,
+
         // Classes/Structs
-        "struct_item" | "class_definition" | "class_declaration" 
-        | "struct_declaration" | "impl_item" | "class_specifier"
-        | "struct_specifier" | "object_declaration" | "data_class_declaration"
-        | "mixin_declaration" | "extension_declaration" | "protocol_declaration"
+        "struct_item"
+        | "class_definition"
+        | "class_declaration"
+        | "struct_declaration"
+        | "impl_item"
+        | "class_specifier"
+        | "struct_specifier"
+        | "object_declaration"
+        | "data_class_declaration"
+        | "mixin_declaration"
+        | "extension_declaration"
+        | "protocol_declaration"
         | "module_declaration" => SymbolKind::Class,
-        
+
         // Interfaces
-        "interface_declaration" | "trait_item" | "interface_type_definition" => SymbolKind::Interface,
-        
+        "interface_declaration" | "trait_item" | "interface_type_definition" => {
+            SymbolKind::Interface
+        }
+
         // Enums/Types
-        "enum_item" | "type_item" | "enum_declaration" | "type_declaration"
-        | "enum_specifier" | "union_specifier" | "union_declaration"
-        | "type_alias_declaration" | "typealias_declaration" | "type_alias"
-        | "newtype_declaration" | "data_declaration" => SymbolKind::Type,
-        
+        "enum_item"
+        | "type_item"
+        | "enum_declaration"
+        | "type_declaration"
+        | "enum_specifier"
+        | "union_specifier"
+        | "union_declaration"
+        | "type_alias_declaration"
+        | "typealias_declaration"
+        | "type_alias"
+        | "newtype_declaration"
+        | "data_declaration" => SymbolKind::Type,
+
         // Methods
         "method_definition" | "method_invocation" => SymbolKind::Method,
-        
+
         // Constants/Fields
-        "const_item" | "lexical_declaration" | "variable_declarator" 
-        | "const_declaration" | "field_declaration" | "constant_declaration" 
-        | "property_declaration" | "var_declaration" | "const_spec"
-        | "top_level_variable_declaration" | "let_binding" => SymbolKind::Constant,
-        
+        "const_item"
+        | "lexical_declaration"
+        | "variable_declarator"
+        | "const_declaration"
+        | "field_declaration"
+        | "constant_declaration"
+        | "property_declaration"
+        | "var_declaration"
+        | "const_spec"
+        | "top_level_variable_declaration"
+        | "let_binding" => SymbolKind::Constant,
+
         // C# specific
         "delegate_declaration" => SymbolKind::Type,
-        
+
         // GraphQL specific
         "object_type_definition" => SymbolKind::Class,
         "field_definition" => SymbolKind::Field,
         "directive_definition" => SymbolKind::Constant,
-        
+
         // Prisma specific
         "model_declaration" => SymbolKind::Class,
-        
+
         // SQL specific
         "create_table_statement" => SymbolKind::Class,
         "create_view_statement" => SymbolKind::Class,
         "create_function_statement" => SymbolKind::Function,
         "create_procedure_statement" => SymbolKind::Function,
-        
+
         _ => SymbolKind::Function,
     }
 }
@@ -832,11 +868,7 @@ fn map_kind(kind: &str, _lang: &str) -> SymbolKind {
 // Извлечение импортов
 // ---------------------------------------------------------------------------
 
-fn extract_imports(
-    node: &tree_sitter::Node,
-    source: &[u8],
-    lang: &str,
-) -> Result<Vec<Import>> {
+fn extract_imports(node: &tree_sitter::Node, source: &[u8], lang: &str) -> Result<Vec<Import>> {
     match lang {
         "rust" => extract_imports_rust(node, source),
         "python" => extract_imports_python(node, source),
@@ -972,7 +1004,13 @@ fn go_import_targets(text: &str) -> Vec<String> {
 
 /// `import java.util.*;` or `import java.util.List;` -> ["java.util.*", "java.util.List"]
 fn java_import_targets(text: &str) -> Vec<String> {
-    let t = text.trim().strip_prefix("import").unwrap_or(text).trim().trim_end_matches(';').trim();
+    let t = text
+        .trim()
+        .strip_prefix("import")
+        .unwrap_or(text)
+        .trim()
+        .trim_end_matches(';')
+        .trim();
     if t.starts_with("static ") {
         return vec![];
     }
@@ -981,7 +1019,13 @@ fn java_import_targets(text: &str) -> Vec<String> {
 
 /// `using System;` or `using System.Collections.Generic;` -> ["System", "System.Collections.Generic"]
 fn csharp_using_target(text: &str) -> Option<String> {
-    let t = text.trim().strip_prefix("using").unwrap_or(text).trim().trim_end_matches(';').trim();
+    let t = text
+        .trim()
+        .strip_prefix("using")
+        .unwrap_or(text)
+        .trim()
+        .trim_end_matches(';')
+        .trim();
     if t.starts_with("static ") {
         return None;
     }
@@ -995,7 +1039,11 @@ fn extract_imports_c_cpp(node: &tree_sitter::Node, source: &[u8]) -> Result<Vec<
     collect_nodes_by_type(node, source, &["preproc_include"], &mut |n, src| {
         let text = node_text(n, src).unwrap_or_default();
         // #include <stdio.h> or #include "local.h"
-        if let Some(path) = text.split(&['<', '"'][..]).nth(1).and_then(|s| s.split(&['>', '"'][..]).next()) {
+        if let Some(path) = text
+            .split(&['<', '"'][..])
+            .nth(1)
+            .and_then(|s| s.split(&['>', '"'][..]).next())
+        {
             if !path.is_empty() {
                 imports.push(Import {
                     from: "self".to_string(),
@@ -1028,7 +1076,7 @@ fn extract_imports_dart(node: &tree_sitter::Node, source: &[u8]) -> Result<Vec<I
             }
             None
         }
-        
+
         if let Some(path) = find_string_literal(n, src) {
             if !path.is_empty() {
                 imports.push(Import {
@@ -1090,7 +1138,8 @@ fn extract_imports_lua(node: &tree_sitter::Node, source: &[u8]) -> Result<Vec<Im
                     for i in 0..args_node.child_count() {
                         if let Some(child) = args_node.child(i) {
                             if child.kind() == "string" {
-                                let module = node_text(&child, src).unwrap_or_default()
+                                let module = node_text(&child, src)
+                                    .unwrap_or_default()
                                     .trim_matches('"')
                                     .trim_matches('\'')
                                     .to_string();
@@ -1117,7 +1166,10 @@ fn extract_imports_zig(node: &tree_sitter::Node, source: &[u8]) -> Result<Vec<Im
     // Also handle const std = @import("std"); (variable_declaration with builtin_function)
     collect_nodes_by_type(node, source, &["builtin_function"], &mut |n, src| {
         // Check if this is @import - field is "builtin_identifier" not "name"
-        if let Some(ident_node) = n.child_by_field_name("builtin_identifier").or_else(|| n.child(0)) {
+        if let Some(ident_node) = n
+            .child_by_field_name("builtin_identifier")
+            .or_else(|| n.child(0))
+        {
             let name = node_text(&ident_node, src).unwrap_or_default();
             if name == "@import" {
                 // Get the string argument - arguments is a child node (index 1), not a field
@@ -1126,7 +1178,8 @@ fn extract_imports_zig(node: &tree_sitter::Node, source: &[u8]) -> Result<Vec<Im
                         for i in 0..args_node.child_count() {
                             if let Some(child) = args_node.child(i) {
                                 if child.kind() == "string" {
-                                    let module = node_text(&child, src).unwrap_or_default()
+                                    let module = node_text(&child, src)
+                                        .unwrap_or_default()
                                         .trim_matches('"')
                                         .to_string();
                                     if !module.is_empty() {
@@ -1163,11 +1216,14 @@ fn extract_imports_elixir(node: &tree_sitter::Node, source: &[u8]) -> Result<Vec
                             if let Some(module_node) = args_node.child(0) {
                                 let module_text = node_text(&module_node, src).unwrap_or_default();
                                 // Handle alias My.{C, D} - split by comma
-                                if keyword == "alias" && module_text.contains('{') && module_text.contains('}') {
+                                if keyword == "alias"
+                                    && module_text.contains('{')
+                                    && module_text.contains('}')
+                                {
                                     // Extract modules from {C, D}
                                     if let Some(start) = module_text.find('{') {
                                         if let Some(end) = module_text.find('}') {
-                                            let inner = &module_text[start+1..end];
+                                            let inner = &module_text[start + 1..end];
                                             let prefix = module_text[..start].trim_end_matches('.');
                                             for part in inner.split(',') {
                                                 let module = format!("{}.{}", prefix, part.trim());
@@ -1209,7 +1265,9 @@ fn extract_imports_haskell(node: &tree_sitter::Node, source: &[u8]) -> Result<Ve
             // Skip "import" and "qualified" if present
             let module_idx = if parts[1] == "qualified" { 2 } else { 1 };
             if module_idx < parts.len() {
-                let module = parts[module_idx].trim_end_matches('.').trim_end_matches('(');
+                let module = parts[module_idx]
+                    .trim_end_matches('.')
+                    .trim_end_matches('(');
                 if !module.is_empty() {
                     imports.push(Import {
                         from: "self".to_string(),
@@ -1277,7 +1335,12 @@ fn rust_use_targets(text: &str) -> Vec<String> {
     if let Some(rest) = t.strip_prefix("pub ") {
         t = rest.trim_start();
     }
-    let t = t.strip_prefix("use ").unwrap_or(t).trim().trim_end_matches(';').trim();
+    let t = t
+        .strip_prefix("use ")
+        .unwrap_or(t)
+        .trim()
+        .trim_end_matches(';')
+        .trim();
     expand_rust_use(t)
 }
 
@@ -1345,9 +1408,7 @@ fn ts_module_specifier(text: &str) -> Option<String> {
         return None;
     }
     // Ищем последний строковый литерал в кавычках
-    let (start, quote) = t
-        .char_indices()
-        .find(|(_, c)| *c == '\'' || *c == '"')?;
+    let (start, quote) = t.char_indices().find(|(_, c)| *c == '\'' || *c == '"')?;
     let rest = &t[start + quote.len_utf8()..];
     let end = rest.find(quote)?;
     let spec = &rest[..end];
@@ -1405,11 +1466,7 @@ where
 // Извлечение вызовов
 // ---------------------------------------------------------------------------
 
-fn extract_calls(
-    node: &tree_sitter::Node,
-    source: &[u8],
-    lang: &str,
-) -> Result<Vec<Call>> {
+fn extract_calls(node: &tree_sitter::Node, source: &[u8], lang: &str) -> Result<Vec<Call>> {
     match lang {
         "rust" => extract_calls_rust(node, source),
         "python" => extract_calls_python(node, source),
@@ -1568,15 +1625,20 @@ fn extract_calls_dart(node: &tree_sitter::Node, source: &[u8]) -> Result<Vec<Cal
 
 fn extract_calls_swift(node: &tree_sitter::Node, source: &[u8]) -> Result<Vec<Call>> {
     let mut calls = Vec::new();
-    collect_nodes_by_type(node, source, &["call_expression", "function_call_expression"], &mut |n, src| {
-        let text = node_text(n, src).unwrap_or_default();
-        let callee = extract_swift_call_callee(&text);
-        calls.push(Call {
-            caller: "unknown".to_string(),
-            callee,
-            line: n.range().start_point.row + 1,
-        });
-    })?;
+    collect_nodes_by_type(
+        node,
+        source,
+        &["call_expression", "function_call_expression"],
+        &mut |n, src| {
+            let text = node_text(n, src).unwrap_or_default();
+            let callee = extract_swift_call_callee(&text);
+            calls.push(Call {
+                caller: "unknown".to_string(),
+                callee,
+                line: n.range().start_point.row + 1,
+            });
+        },
+    )?;
     Ok(calls)
 }
 
@@ -1640,9 +1702,9 @@ fn extract_calls_elixir(node: &tree_sitter::Node, source: &[u8]) -> Result<Vec<C
         if n.kind() == "binary_operator" {
             // Check if operator is |> (pipe)
             let has_pipe = (0..n.child_count()).any(|i| {
-                n.child(i).map(|c| {
-                    c.kind() == "|>" || node_text(&c, src).unwrap_or_default() == "|>"
-                }).unwrap_or(false)
+                n.child(i)
+                    .map(|c| c.kind() == "|>" || node_text(&c, src).unwrap_or_default() == "|>")
+                    .unwrap_or(false)
             });
             if !has_pipe {
                 return;
@@ -1660,17 +1722,27 @@ fn extract_calls_elixir(node: &tree_sitter::Node, source: &[u8]) -> Result<Vec<C
             }
             return;
         }
-        
+
         // For call nodes: skip def/defp/defmacro/defguard/defmodule/import/alias/require (outer call)
         if let Some(first_child) = n.child(0) {
             if first_child.kind() == "identifier" {
                 let keyword = node_text(&first_child, src).unwrap_or_default();
-                if matches!(keyword.as_str(), "import" | "alias" | "require" | "def" | "defmodule" | "defp" | "defmacro" | "defguard") {
+                if matches!(
+                    keyword.as_str(),
+                    "import"
+                        | "alias"
+                        | "require"
+                        | "def"
+                        | "defmodule"
+                        | "defp"
+                        | "defmacro"
+                        | "defguard"
+                ) {
                     return;
                 }
             }
         }
-        
+
         // Also skip inner calls that are function names in def/defp/defmacro/defguard definitions
         // These have parent = arguments, grandparent = call with def keyword
         if let Some(parent) = n.parent() {
@@ -1680,7 +1752,10 @@ fn extract_calls_elixir(node: &tree_sitter::Node, source: &[u8]) -> Result<Vec<C
                         if let Some(gp_first) = grandparent.child(0) {
                             if gp_first.kind() == "identifier" {
                                 let keyword = node_text(&gp_first, src).unwrap_or_default();
-                                if matches!(keyword.as_str(), "def" | "defp" | "defmacro" | "defmodule" | "defguard") {
+                                if matches!(
+                                    keyword.as_str(),
+                                    "def" | "defp" | "defmacro" | "defmodule" | "defguard"
+                                ) {
                                     return;
                                 }
                             }
@@ -1689,24 +1764,30 @@ fn extract_calls_elixir(node: &tree_sitter::Node, source: &[u8]) -> Result<Vec<C
                 }
             }
         }
-        
+
         // Also skip if this call is the right side of a pipe (already handled by binary_operator)
         if let Some(parent) = n.parent() {
             if parent.kind() == "binary_operator" {
                 // Check if this is the right child of a pipe
                 let has_pipe = (0..parent.child_count()).any(|i| {
-                    parent.child(i).map(|c| {
-                        c.kind() == "|>" || node_text(&c, src).unwrap_or_default() == "|>"
-                    }).unwrap_or(false)
+                    parent
+                        .child(i)
+                        .map(|c| c.kind() == "|>" || node_text(&c, src).unwrap_or_default() == "|>")
+                        .unwrap_or(false)
                 });
-                if has_pipe && parent.child_by_field_name("right").is_some_and(|r| r.id() == n.id()) {
+                if has_pipe
+                    && parent
+                        .child_by_field_name("right")
+                        .is_some_and(|r| r.id() == n.id())
+                {
                     return;
                 }
             }
         }
-        
+
         // Check if this is a method call (has dot child) or bare function call
-        let has_dot = (0..n.child_count()).any(|i| n.child(i).map(|c| c.kind() == "dot").unwrap_or(false));
+        let has_dot =
+            (0..n.child_count()).any(|i| n.child(i).map(|c| c.kind() == "dot").unwrap_or(false));
         let text = node_text(n, src).unwrap_or_default();
         let callee = extract_elixir_call_callee(&text);
         if !callee.is_empty() && (has_dot || text.contains('(')) {
@@ -1717,7 +1798,7 @@ fn extract_calls_elixir(node: &tree_sitter::Node, source: &[u8]) -> Result<Vec<C
             });
         }
     })?;
-    
+
     // Deduplicate by (callee, line)
     calls.sort_by(|a, b| a.line.cmp(&b.line).then_with(|| a.callee.cmp(&b.callee)));
     calls.dedup_by(|a, b| a.callee == b.callee && a.line == b.line);
@@ -1739,16 +1820,22 @@ fn extract_calls_haskell(node: &tree_sitter::Node, source: &[u8]) -> Result<Vec<
     // We need to filter out pure infix expressions (a + b * 2) and only keep function calls
     collect_nodes_by_type(node, source, &["apply", "infix"], &mut |n, src| {
         let text = node_text(n, src).unwrap_or_default();
-        
+
         // For infix, check if it's a function call (has $ operator) vs pure infix (a + b)
         if n.kind() == "infix" {
             // Get the operator
             let op_text = (0..n.child_count())
                 .filter_map(|i| n.child(i))
-                .find(|c| c.kind() == "operator" || node_text(c, src).unwrap_or_default().chars().all(|ch| "+-*/<>=!&|^~".contains(ch)))
+                .find(|c| {
+                    c.kind() == "operator"
+                        || node_text(c, src)
+                            .unwrap_or_default()
+                            .chars()
+                            .all(|ch| "+-*/<>=!&|^~".contains(ch))
+                })
                 .as_ref()
                 .and_then(|c| node_text(c, src));
-            
+
             // Skip pure arithmetic/infix operators, keep $ and function operators
             if let Some(op) = op_text {
                 if !op.contains('$') && op.chars().all(|ch| "+-*/<>=!&|^~%".contains(ch)) {
@@ -1756,7 +1843,7 @@ fn extract_calls_haskell(node: &tree_sitter::Node, source: &[u8]) -> Result<Vec<
                 }
             }
         }
-        
+
         let callee = extract_haskell_call_callee(&text);
         if !callee.is_empty() {
             // Deduplicate: check if we already have this call at this line
@@ -1827,7 +1914,10 @@ fn extract_calls_sql(node: &tree_sitter::Node, source: &[u8]) -> Result<Vec<Call
         // Get the function name from object_reference
         if let Some(obj_ref) = n.child_by_field_name("value").or_else(|| n.child(0)) {
             if obj_ref.kind() == "object_reference" {
-                if let Some(ident) = obj_ref.child_by_field_name("name").or_else(|| obj_ref.child(0)) {
+                if let Some(ident) = obj_ref
+                    .child_by_field_name("name")
+                    .or_else(|| obj_ref.child(0))
+                {
                     let callee = node_text(&ident, src).unwrap_or_default();
                     if !callee.is_empty() {
                         calls.push(Call {
@@ -1888,18 +1978,15 @@ fn extract_haskell_call_callee(text: &str) -> String {
 // Извлечение наследования
 // ---------------------------------------------------------------------------
 
-fn extract_extends(
-    node: &tree_sitter::Node,
-    source: &[u8],
-    lang: &str,
-) -> Result<Vec<Heritage>> {
+fn extract_extends(node: &tree_sitter::Node, source: &[u8], lang: &str) -> Result<Vec<Heritage>> {
     let mut out = Vec::new();
     match lang {
         "rust" => {
             collect_nodes_by_type(node, source, &["impl_item"], &mut |n, src| {
-                let (Some(trait_node), Some(type_node)) =
-                    (n.child_by_field_name("trait"), n.child_by_field_name("type"))
-                else {
+                let (Some(trait_node), Some(type_node)) = (
+                    n.child_by_field_name("trait"),
+                    n.child_by_field_name("type"),
+                ) else {
                     return;
                 };
                 let child = last_type_segment(&node_text(&type_node, src).unwrap_or_default());
@@ -1983,7 +2070,9 @@ fn extract_extends(
                     };
                     let child = last_type_segment(&node_text(&name_node, src).unwrap_or_default());
                     let text = node_text(n, src).unwrap_or_default();
-                    for (keyword, rest) in [("extends", text.as_str()), ("implements", text.as_str())] {
+                    for (keyword, rest) in
+                        [("extends", text.as_str()), ("implements", text.as_str())]
+                    {
                         let Some(pos) = rest.find(keyword) else {
                             continue;
                         };
@@ -2008,7 +2097,11 @@ fn extract_extends(
             collect_nodes_by_type(
                 node,
                 source,
-                &["class_declaration", "interface_declaration", "struct_declaration"],
+                &[
+                    "class_declaration",
+                    "interface_declaration",
+                    "struct_declaration",
+                ],
                 &mut |n, src| {
                     let Some(name_node) = n.child_by_field_name("name") else {
                         return;
@@ -2043,7 +2136,13 @@ fn extract_extends(
                     if let Some(colon_pos) = text.find(':') {
                         let after = &text[colon_pos + 1..];
                         let after = after.split('{').next().unwrap_or(after);
-                        let child = text.split_whitespace().nth(1).unwrap_or("").split(':').next().unwrap_or("");
+                        let child = text
+                            .split_whitespace()
+                            .nth(1)
+                            .unwrap_or("")
+                            .split(':')
+                            .next()
+                            .unwrap_or("");
                         let child = last_type_segment(child);
                         for part in after.split(',') {
                             let parent = last_type_segment(part);
@@ -2060,57 +2159,98 @@ fn extract_extends(
             )?;
         }
         "dart" => {
-            collect_nodes_by_type(node, source, &["class_declaration", "mixin_declaration"], &mut |n, src| {
-                let text = node_text(n, src).unwrap_or_default();
-                let child = text.split_whitespace().nth(1).unwrap_or("");
-                let child = last_type_segment(child);
-                let text_clone = text.clone();
-                for (keyword, rest) in [("extends", text), ("implements", text_clone.clone()), ("with", text_clone)] {
-                    let Some(pos) = rest.find(keyword) else { continue; };
-                    let after = &rest[pos + keyword.len()..];
-                    let after = after.split(&['{', 'e', 'i', 'w'][..]).next().unwrap_or(after);
-                    for part in after.split(',') {
-                        let parent = last_type_segment(part);
-                        if !parent.is_empty() && !child.is_empty() {
-                            out.push(Heritage { child: child.to_string(), parent, line: n.range().start_point.row + 1 });
+            collect_nodes_by_type(
+                node,
+                source,
+                &["class_declaration", "mixin_declaration"],
+                &mut |n, src| {
+                    let text = node_text(n, src).unwrap_or_default();
+                    let child = text.split_whitespace().nth(1).unwrap_or("");
+                    let child = last_type_segment(child);
+                    let text_clone = text.clone();
+                    for (keyword, rest) in [
+                        ("extends", text),
+                        ("implements", text_clone.clone()),
+                        ("with", text_clone),
+                    ] {
+                        let Some(pos) = rest.find(keyword) else {
+                            continue;
+                        };
+                        let after = &rest[pos + keyword.len()..];
+                        let after = after
+                            .split(&['{', 'e', 'i', 'w'][..])
+                            .next()
+                            .unwrap_or(after);
+                        for part in after.split(',') {
+                            let parent = last_type_segment(part);
+                            if !parent.is_empty() && !child.is_empty() {
+                                out.push(Heritage {
+                                    child: child.to_string(),
+                                    parent,
+                                    line: n.range().start_point.row + 1,
+                                });
+                            }
                         }
                     }
-                }
-            })?;
+                },
+            )?;
         }
         "swift" => {
-            collect_nodes_by_type(node, source, &["class_declaration", "struct_declaration", "enum_declaration", "protocol_declaration"], &mut |n, src| {
-                let text = node_text(n, src).unwrap_or_default();
-                if let Some(colon_pos) = text.find(':') {
-                    let after = &text[colon_pos + 1..];
-                    let after = after.split('{').next().unwrap_or(after);
-                    let child = text.split_whitespace().nth(1).unwrap_or("");
-                    let child = last_type_segment(child);
-                    for part in after.split(',') {
-                        let parent = last_type_segment(part);
-                        if !parent.is_empty() && !child.is_empty() {
-                            out.push(Heritage { child: child.to_string(), parent, line: n.range().start_point.row + 1 });
+            collect_nodes_by_type(
+                node,
+                source,
+                &[
+                    "class_declaration",
+                    "struct_declaration",
+                    "enum_declaration",
+                    "protocol_declaration",
+                ],
+                &mut |n, src| {
+                    let text = node_text(n, src).unwrap_or_default();
+                    if let Some(colon_pos) = text.find(':') {
+                        let after = &text[colon_pos + 1..];
+                        let after = after.split('{').next().unwrap_or(after);
+                        let child = text.split_whitespace().nth(1).unwrap_or("");
+                        let child = last_type_segment(child);
+                        for part in after.split(',') {
+                            let parent = last_type_segment(part);
+                            if !parent.is_empty() && !child.is_empty() {
+                                out.push(Heritage {
+                                    child: child.to_string(),
+                                    parent,
+                                    line: n.range().start_point.row + 1,
+                                });
+                            }
                         }
                     }
-                }
-            })?;
+                },
+            )?;
         }
         "kotlin" => {
-            collect_nodes_by_type(node, source, &["class_declaration", "interface_declaration"], &mut |n, src| {
-                let text = node_text(n, src).unwrap_or_default();
-                if let Some(colon_pos) = text.find(':') {
-                    let after = &text[colon_pos + 1..];
-                    let after = after.split('{').next().unwrap_or(after);
-                    let child = text.split_whitespace().nth(1).unwrap_or("");
-                    let child = last_type_segment(child);
-                    for part in after.split(',') {
-                        let parent = last_type_segment(part);
-                        if !parent.is_empty() && !child.is_empty() {
-                            out.push(Heritage { child: child.to_string(), parent, line: n.range().start_point.row + 1 });
+            collect_nodes_by_type(
+                node,
+                source,
+                &["class_declaration", "interface_declaration"],
+                &mut |n, src| {
+                    let text = node_text(n, src).unwrap_or_default();
+                    if let Some(colon_pos) = text.find(':') {
+                        let after = &text[colon_pos + 1..];
+                        let after = after.split('{').next().unwrap_or(after);
+                        let child = text.split_whitespace().nth(1).unwrap_or("");
+                        let child = last_type_segment(child);
+                        for part in after.split(',') {
+                            let parent = last_type_segment(part);
+                            if !parent.is_empty() && !child.is_empty() {
+                                out.push(Heritage {
+                                    child: child.to_string(),
+                                    parent,
+                                    line: n.range().start_point.row + 1,
+                                });
+                            }
                         }
                     }
-                }
-            })?;
+                },
+            )?;
         }
         "zig" => {
             // Zig uses comptime and @TypeOf for polymorphism, no traditional inheritance
@@ -2134,28 +2274,41 @@ fn extract_extends(
                     for part in after.split_whitespace() {
                         let parent = last_type_segment(part);
                         if !parent.is_empty() && !child.is_empty() {
-                            out.push(Heritage { child: child.to_string(), parent, line: n.range().start_point.row + 1 });
+                            out.push(Heritage {
+                                child: child.to_string(),
+                                parent,
+                                line: n.range().start_point.row + 1,
+                            });
                         }
                     }
                 }
             })?;
         }
         "graphql" => {
-            collect_nodes_by_type(node, source, &["object_type_definition", "interface_type_definition"], &mut |n, src| {
-                let text = node_text(n, src).unwrap_or_default();
-                if let Some(impl_pos) = text.find("implements") {
-                    let after = &text[impl_pos + 10..];
-                    let after = after.split('{').next().unwrap_or(after);
-                    let child = text.split_whitespace().nth(1).unwrap_or("");
-                    let child = last_type_segment(child);
-                    for part in after.split('&') {
-                        let parent = last_type_segment(part);
-                        if !parent.is_empty() && !child.is_empty() {
-                            out.push(Heritage { child: child.to_string(), parent, line: n.range().start_point.row + 1 });
+            collect_nodes_by_type(
+                node,
+                source,
+                &["object_type_definition", "interface_type_definition"],
+                &mut |n, src| {
+                    let text = node_text(n, src).unwrap_or_default();
+                    if let Some(impl_pos) = text.find("implements") {
+                        let after = &text[impl_pos + 10..];
+                        let after = after.split('{').next().unwrap_or(after);
+                        let child = text.split_whitespace().nth(1).unwrap_or("");
+                        let child = last_type_segment(child);
+                        for part in after.split('&') {
+                            let parent = last_type_segment(part);
+                            if !parent.is_empty() && !child.is_empty() {
+                                out.push(Heritage {
+                                    child: child.to_string(),
+                                    parent,
+                                    line: n.range().start_point.row + 1,
+                                });
+                            }
                         }
                     }
-                }
-            })?;
+                },
+            )?;
         }
         "sql" => {
             // SQL doesn't have traditional inheritance
@@ -2169,18 +2322,18 @@ fn extract_extends(
 fn last_type_segment(text: &str) -> String {
     let t = text.trim();
     let t = t.split('<').next().unwrap_or(t).trim();
-    let seg = t
-        .rsplit(&['.', ':'][..])
-        .next()
-        .unwrap_or(t)
-        .trim();
+    let seg = t.rsplit(&['.', ':'][..]).next().unwrap_or(t).trim();
     seg.trim_matches(|c: char| !(c.is_alphanumeric() || c == '_'))
         .to_string()
 }
 
 /// Выражение вызова до открывающей скобки аргументов: `obj.method(x.y)` -> `obj.method`.
 fn callee_head(text: &str) -> &str {
-    text.split('(').next().unwrap_or(text).trim().trim_end_matches('!')
+    text.split('(')
+        .next()
+        .unwrap_or(text)
+        .trim()
+        .trim_end_matches('!')
 }
 
 fn last_segment<'a>(head: &'a str, separators: &[&str]) -> &'a str {
@@ -2211,10 +2364,22 @@ mod tests {
 
     #[test]
     fn test_detect_language() {
-        assert_eq!(TreeSitterParser::detect_language("src/main.rs"), Some("rust"));
-        assert_eq!(TreeSitterParser::detect_language("src/main.py"), Some("python"));
-        assert_eq!(TreeSitterParser::detect_language("src/main.ts"), Some("typescript"));
-        assert_eq!(TreeSitterParser::detect_language("src/main.js"), Some("typescript"));
+        assert_eq!(
+            TreeSitterParser::detect_language("src/main.rs"),
+            Some("rust")
+        );
+        assert_eq!(
+            TreeSitterParser::detect_language("src/main.py"),
+            Some("python")
+        );
+        assert_eq!(
+            TreeSitterParser::detect_language("src/main.ts"),
+            Some("typescript")
+        );
+        assert_eq!(
+            TreeSitterParser::detect_language("src/main.js"),
+            Some("typescript")
+        );
         assert_eq!(TreeSitterParser::detect_language("README.md"), None);
     }
 

@@ -100,7 +100,10 @@ fn fts_search_finds_symbol_by_prefix() {
         "префиксный поиск не нашёл символ: {found:?}"
     );
     // Другой запрос не должен находить этот узел
-    assert!(store.search_nodes("nonexistent_zzz", 10).unwrap().is_empty());
+    assert!(store
+        .search_nodes("nonexistent_zzz", 10)
+        .unwrap()
+        .is_empty());
 }
 
 #[test]
@@ -113,7 +116,11 @@ fn symbols_by_name_skips_files_and_dirs() {
         store.upsert_node(n).unwrap();
     }
     let found = store.symbols_by_name("utils").unwrap();
-    assert_eq!(found.len(), 1, "файлы и каталоги не должны попадать: {found:?}");
+    assert_eq!(
+        found.len(),
+        1,
+        "файлы и каталоги не должны попадать: {found:?}"
+    );
     assert_eq!(found[0].id, func.id);
 }
 
@@ -161,8 +168,15 @@ fn file_meta_and_settings_roundtrip() {
         .unwrap();
 
     store.set_setting("exclude", "vendor").unwrap();
-    assert_eq!(store.get_setting("exclude").unwrap().as_deref(), Some("vendor"));
-    assert!(store.all_settings().unwrap().iter().any(|(k, v)| k == "exclude" && v == "vendor"));
+    assert_eq!(
+        store.get_setting("exclude").unwrap().as_deref(),
+        Some("vendor")
+    );
+    assert!(store
+        .all_settings()
+        .unwrap()
+        .iter()
+        .any(|(k, v)| k == "exclude" && v == "vendor"));
 }
 
 #[test]
@@ -173,6 +187,8 @@ fn call_log_is_written_and_summarised() {
 
     let summary = store.call_log_summary().unwrap();
     assert_eq!(summary.len(), 2);
-    assert!(summary.iter().any(|(tool, calls, tokens)| tool == "search" && *calls == 1 && *tokens == 120));
+    assert!(summary
+        .iter()
+        .any(|(tool, calls, tokens)| tool == "search" && *calls == 1 && *tokens == 120));
     assert_eq!(store.recent_calls(10).unwrap().len(), 2);
 }

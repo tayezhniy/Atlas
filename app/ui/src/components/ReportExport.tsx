@@ -28,7 +28,7 @@ export default function ReportExport({ projectPath, isOpen, onClose, initialForm
       const text =
         format === 'json'
           ? JSON.stringify(await window.atlasAPI.report({ projectPath, format }), null, 2)
-          : await window.atlasAPI.report({ projectPath, format })
+          : await window.atlasAPI.report({ projectPath, format }) as string
       if (current === request.current) setContent(text)
     } catch (err: any) {
       setError(err.message || 'Ошибка генерации отчёта')

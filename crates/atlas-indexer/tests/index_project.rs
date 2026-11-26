@@ -15,8 +15,16 @@ fn write(root: &Path, rel: &str, body: &str) {
 fn project() -> (tempfile::TempDir, String) {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().to_string_lossy().to_string();
-    write(dir.path(), "a.py", "def helper():\n    return 1\n\ndef main():\n    return helper()\n");
-    write(dir.path(), "pkg/b.py", "from a import main\n\nclass Runner:\n    def go(self):\n        return main()\n");
+    write(
+        dir.path(),
+        "a.py",
+        "def helper():\n    return 1\n\ndef main():\n    return helper()\n",
+    );
+    write(
+        dir.path(),
+        "pkg/b.py",
+        "from a import main\n\nclass Runner:\n    def go(self):\n        return main()\n",
+    );
     write(dir.path(), "NOTES.md", "# заметки\n");
     (dir, root)
 }
@@ -52,9 +60,28 @@ fn indexes_files_symbols_and_edges() {
     assert!(store.find_file_node_by_path("NOTES.md").unwrap().is_some());
 
     let e = edges(&store);
-    assert!(e.contains(&("main".into(), "helper".into(), "calls".into(), "certain".into())), "{e:?}");
-    assert!(e.contains(&("go".into(), "main".into(), "calls".into(), "likely".into())), "{e:?}");
-    assert!(e.contains(&("b.py".into(), "a.py".into(), "imports".into(), "certain".into())), "{e:?}");
+    assert!(
+        e.contains(&(
+            "main".into(),
+            "helper".into(),
+            "calls".into(),
+            "certain".into()
+        )),
+        "{e:?}"
+    );
+    assert!(
+        e.contains(&("go".into(), "main".into(), "calls".into(), "likely".into())),
+        "{e:?}"
+    );
+    assert!(
+        e.contains(&(
+            "b.py".into(),
+            "a.py".into(),
+            "imports".into(),
+            "certain".into()
+        )),
+        "{e:?}"
+    );
 
     // Самый востребованный символ получает наибольший ранг
     let main = &store.symbols_by_name("main").unwrap()[0];
@@ -77,11 +104,17 @@ fn reindex_is_idempotent_and_keeps_edges() {
     let mut store = Store::open(dir.path().join(".atlas-test.db")).unwrap();
     index(&mut store, &root);
     let before = edges(&store);
-    let nodes_before: i64 = store.conn().query_row("SELECT COUNT(*) FROM node", [], |r| r.get(0)).unwrap();
+    let nodes_before: i64 = store
+        .conn()
+        .query_row("SELECT COUNT(*) FROM node", [], |r| r.get(0))
+        .unwrap();
 
     let again = index(&mut store, &root);
     assert_eq!(again.files_indexed, 0, "ничего не менялось: {again:?}");
-    let nodes_after: i64 = store.conn().query_row("SELECT COUNT(*) FROM node", [], |r| r.get(0)).unwrap();
+    let nodes_after: i64 = store
+        .conn()
+        .query_row("SELECT COUNT(*) FROM node", [], |r| r.get(0))
+        .unwrap();
     assert_eq!(nodes_before, nodes_after);
     assert_eq!(before, edges(&store));
 }
@@ -92,13 +125,31 @@ fn changed_file_is_replaced_without_duplicates() {
     let mut store = Store::open(dir.path().join(".atlas-test.db")).unwrap();
     index(&mut store, &root);
 
-    write(dir.path(), "a.py", "def helper():\n    return 2\n\ndef renamed():\n    return helper()\n");
+    write(
+        dir.path(),
+        "a.py",
+        "def helper():\n    return 2\n\ndef renamed():\n    return helper()\n",
+    );
     let stats = index(&mut store, &root);
     assert_eq!(stats.files_indexed, 1);
-    assert!(store.symbols_by_name("main").unwrap().is_empty(), "старый символ должен исчезнуть");
+    assert!(
+        store.symbols_by_name("main").unwrap().is_empty(),
+        "старый символ должен исчезнуть"
+    );
     assert_eq!(store.symbols_by_name("renamed").unwrap().len(), 1);
-    assert_eq!(store.symbols_by_name("helper").unwrap().len(), 1, "дубликатов быть не должно");
-    assert!(store.search_nodes("main", 10).unwrap().iter().all(|n| n.name != "main"), "FTS должен забыть удалённое");
+    assert_eq!(
+        store.symbols_by_name("helper").unwrap().len(),
+        1,
+        "дубликатов быть не должно"
+    );
+    assert!(
+        store
+            .search_nodes("main", 10)
+            .unwrap()
+            .iter()
+            .all(|n| n.name != "main"),
+        "FTS должен забыть удалённое"
+    );
 }
 
 #[test]
@@ -123,7 +174,11 @@ fn generic_method_names_do_not_create_edges() {
     );
     let mut store = Store::open(dir.path().join(".atlas-test.db")).unwrap();
     index(&mut store, &root);
-    assert!(edges(&store).iter().all(|e| e.1 != "new"), "{:?}", edges(&store));
+    assert!(
+        edges(&store).iter().all(|e| e.1 != "new"),
+        "{:?}",
+        edges(&store)
+    );
 }
 
 #[test]
@@ -133,19 +188,46 @@ fn incoming_edges_survive_when_target_file_changes() {
     index(&mut store, &root);
 
     // b.py не менялся и пропускается; связи go -> main и b.py -> a.py должны пережить правку a.py
-    write(dir.path(), "a.py", "def helper():\n    return 1\n\ndef main():\n    return helper() + 1\n");
+    write(
+        dir.path(),
+        "a.py",
+        "def helper():\n    return 1\n\ndef main():\n    return helper() + 1\n",
+    );
     let stats = index(&mut store, &root);
     assert_eq!(stats.files_indexed, 1, "{stats:?}");
     let e = edges(&store);
-    assert!(e.contains(&("go".into(), "main".into(), "calls".into(), "likely".into())), "{e:?}");
-    assert!(e.contains(&("b.py".into(), "a.py".into(), "imports".into(), "certain".into())), "{e:?}");
+    assert!(
+        e.contains(&("go".into(), "main".into(), "calls".into(), "likely".into())),
+        "{e:?}"
+    );
+    assert!(
+        e.contains(&(
+            "b.py".into(),
+            "a.py".into(),
+            "imports".into(),
+            "certain".into()
+        )),
+        "{e:?}"
+    );
 
     // Переименование: связь на исчезнувший символ не должна остаться висеть
-    write(dir.path(), "a.py", "def helper():\n    return 1\n\ndef primary():\n    return helper()\n");
+    write(
+        dir.path(),
+        "a.py",
+        "def helper():\n    return 1\n\ndef primary():\n    return helper()\n",
+    );
     index(&mut store, &root);
     let e = edges(&store);
     assert!(e.iter().all(|x| x.1 != "main"), "{e:?}");
-    assert!(e.contains(&("b.py".into(), "a.py".into(), "imports".into(), "certain".into())), "{e:?}");
+    assert!(
+        e.contains(&(
+            "b.py".into(),
+            "a.py".into(),
+            "imports".into(),
+            "certain".into()
+        )),
+        "{e:?}"
+    );
 }
 
 #[test]
@@ -167,7 +249,10 @@ fn ambiguous_call_names_link_all_candidates_as_guess() {
     assert_eq!(guesses.len(), 2, "ожидались две связи guess: {e:?}");
     assert!(guesses.iter().any(|x| x.1 == "run"), "{e:?}");
     assert!(stats.calls_guessed >= 2, "{stats:?}");
-    assert_eq!(stats.calls_unresolved, 0, "кандидатов мало, связи должны появиться: {stats:?}");
+    assert_eq!(
+        stats.calls_unresolved, 0,
+        "кандидатов мало, связи должны появиться: {stats:?}"
+    );
 }
 
 #[test]
@@ -175,7 +260,11 @@ fn call_stats_report_linked_and_unresolved() {
     let (dir, root) = project();
     let mut store = Store::open(dir.path().join(".atlas-test.db")).unwrap();
     let stats = index(&mut store, &root);
-    assert_eq!(stats.calls_linked + stats.calls_unresolved, stats.calls_extracted, "{stats:?}");
+    assert_eq!(
+        stats.calls_linked + stats.calls_unresolved,
+        stats.calls_extracted,
+        "{stats:?}"
+    );
     assert!(stats.calls_linked > 0, "{stats:?}");
 }
 
@@ -187,7 +276,10 @@ fn outdated_parser_version_reparses_unchanged_files() {
     let before = edges(&store);
     assert_eq!(index(&mut store, &root).files_indexed, 0);
 
-    store.conn().execute("UPDATE project SET parser_version = 2", []).unwrap();
+    store
+        .conn()
+        .execute("UPDATE project SET parser_version = 2", [])
+        .unwrap();
     let stats = index(&mut store, &root);
     assert_eq!(stats.errors, 0, "{stats:?}");
     assert_eq!(stats.files_indexed, 3, "{stats:?}");

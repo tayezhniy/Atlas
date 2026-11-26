@@ -26,9 +26,30 @@ pub fn estimate_tokens(text: &str) -> i32 {
 /// Имена методов, которые есть почти у каждого типа: связь по такому имени — догадка.
 pub fn is_generic_name(name: &str) -> bool {
     const GENERIC: [&str; 24] = [
-        "new", "default", "from", "into", "clone", "fmt", "drop", "eq", "hash", "len", "get", "set",
-        "push", "pop", "insert", "remove", "next", "iter", "map", "to_string", "as_str", "unwrap",
-        "ok", "is_empty",
+        "new",
+        "default",
+        "from",
+        "into",
+        "clone",
+        "fmt",
+        "drop",
+        "eq",
+        "hash",
+        "len",
+        "get",
+        "set",
+        "push",
+        "pop",
+        "insert",
+        "remove",
+        "next",
+        "iter",
+        "map",
+        "to_string",
+        "as_str",
+        "unwrap",
+        "ok",
+        "is_empty",
     ];
     GENERIC.contains(&name)
 }
@@ -63,11 +84,7 @@ pub fn normalize_path(path: &Path) -> String {
 pub fn simple_name(callee: &str) -> String {
     let t = callee.trim();
     let t = t.split('<').next().unwrap_or(t);
-    t.rsplit(['.', ':'])
-        .next()
-        .unwrap_or(t)
-        .trim()
-        .to_string()
+    t.rsplit(['.', ':']).next().unwrap_or(t).trim().to_string()
 }
 
 pub fn map_symbol_kind(kind: &SymbolKind) -> NodeKind {
@@ -141,7 +158,9 @@ pub fn resolve_import_target(
     if target.is_empty() || target == "*" {
         return None;
     }
-    let from_dir = Path::new(from_path).parent().unwrap_or_else(|| Path::new(""));
+    let from_dir = Path::new(from_path)
+        .parent()
+        .unwrap_or_else(|| Path::new(""));
     let mut bases: Vec<String> = Vec::new();
 
     if target.contains("::") {
@@ -185,7 +204,11 @@ pub fn resolve_import_target(
             parts.push(rest.replace('.', "/"));
         }
         bases.push(parts.join("/"));
-    } else if target.starts_with("./") || target.starts_with("../") || target == "." || target == ".." {
+    } else if target.starts_with("./")
+        || target.starts_with("../")
+        || target == "."
+        || target == ".."
+    {
         bases.push(normalize_path(&from_dir.join(target)));
     } else if target.contains('/') {
         bases.push(normalize_path(Path::new(target)));
@@ -269,7 +292,10 @@ mod tests {
     #[test]
     fn external_packages_are_ignored() {
         let f = files(&["src/main.rs"]);
-        assert_eq!(resolve_import_target(&f, "std::collections", "src/main.rs"), None);
+        assert_eq!(
+            resolve_import_target(&f, "std::collections", "src/main.rs"),
+            None
+        );
         assert_eq!(resolve_import_target(&f, "react", "web/a.tsx"), None);
     }
 }

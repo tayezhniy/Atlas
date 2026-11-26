@@ -1,6 +1,6 @@
 use crate::error::{Result, StoreError};
 use crate::schema::{Edge, EdgeKind, FileMeta, Node, NodeKind};
-use rusqlite::{Connection, params};
+use rusqlite::{params, Connection};
 use std::path::Path;
 
 /// Обёртка над соединением с базой данных индекса.
@@ -114,12 +114,30 @@ impl Store {
         )?;
         match stmt.query_row(params![id.to_string()], |row| {
             let id_str: String = row.get(0)?;
-            let id = uuid::Uuid::parse_str(&id_str).map_err(|e| rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e)))?;
+            let id = uuid::Uuid::parse_str(&id_str).map_err(|e| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    0,
+                    rusqlite::types::Type::Text,
+                    Box::new(e),
+                )
+            })?;
             let kind_str: String = row.get(1)?;
-            let kind = parse_node_kind(&kind_str).map_err(|e| rusqlite::Error::FromSqlConversionFailure(1, rusqlite::types::Type::Text, Box::new(e)))?;
+            let kind = parse_node_kind(&kind_str).map_err(|e| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    1,
+                    rusqlite::types::Type::Text,
+                    Box::new(e),
+                )
+            })?;
             let parent_id: Option<String> = row.get(4)?;
             let parent_id = match parent_id {
-                Some(s) => Some(uuid::Uuid::parse_str(&s).map_err(|e| rusqlite::Error::FromSqlConversionFailure(4, rusqlite::types::Type::Text, Box::new(e)))?),
+                Some(s) => Some(uuid::Uuid::parse_str(&s).map_err(|e| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        4,
+                        rusqlite::types::Type::Text,
+                        Box::new(e),
+                    )
+                })?),
                 None => None,
             };
             Ok(Node {
@@ -146,9 +164,11 @@ impl Store {
 
     /// Проверяет, существует ли узел с таким ID (без полной десериализации).
     pub fn node_exists(&self, id: &uuid::Uuid) -> Result<bool> {
-        let exists: bool = self
-            .conn
-            .query_row("SELECT COUNT(*) > 0 FROM node WHERE id = ?1", params![id.to_string()], |r| r.get(0))?;
+        let exists: bool = self.conn.query_row(
+            "SELECT COUNT(*) > 0 FROM node WHERE id = ?1",
+            params![id.to_string()],
+            |r| r.get(0),
+        )?;
         Ok(exists)
     }
 
@@ -160,12 +180,30 @@ impl Store {
         )?;
         match stmt.query_row(params![path], |row| {
             let id_str: String = row.get(0)?;
-            let id = uuid::Uuid::parse_str(&id_str).map_err(|e| rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e)))?;
+            let id = uuid::Uuid::parse_str(&id_str).map_err(|e| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    0,
+                    rusqlite::types::Type::Text,
+                    Box::new(e),
+                )
+            })?;
             let kind_str: String = row.get(1)?;
-            let kind = parse_node_kind(&kind_str).map_err(|e| rusqlite::Error::FromSqlConversionFailure(1, rusqlite::types::Type::Text, Box::new(e)))?;
+            let kind = parse_node_kind(&kind_str).map_err(|e| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    1,
+                    rusqlite::types::Type::Text,
+                    Box::new(e),
+                )
+            })?;
             let parent_id: Option<String> = row.get(4)?;
             let parent_id = match parent_id {
-                Some(s) => Some(uuid::Uuid::parse_str(&s).map_err(|e| rusqlite::Error::FromSqlConversionFailure(4, rusqlite::types::Type::Text, Box::new(e)))?),
+                Some(s) => Some(uuid::Uuid::parse_str(&s).map_err(|e| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        4,
+                        rusqlite::types::Type::Text,
+                        Box::new(e),
+                    )
+                })?),
                 None => None,
             };
             Ok(Node {
@@ -198,12 +236,30 @@ impl Store {
         )?;
         let rows = stmt.query_map(params![format!("{}%", path_prefix)], |row| {
             let id_str: String = row.get(0)?;
-            let id = uuid::Uuid::parse_str(&id_str).map_err(|e| rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e)))?;
+            let id = uuid::Uuid::parse_str(&id_str).map_err(|e| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    0,
+                    rusqlite::types::Type::Text,
+                    Box::new(e),
+                )
+            })?;
             let kind_str: String = row.get(1)?;
-            let kind = parse_node_kind(&kind_str).map_err(|e| rusqlite::Error::FromSqlConversionFailure(1, rusqlite::types::Type::Text, Box::new(e)))?;
+            let kind = parse_node_kind(&kind_str).map_err(|e| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    1,
+                    rusqlite::types::Type::Text,
+                    Box::new(e),
+                )
+            })?;
             let parent_id: Option<String> = row.get(4)?;
             let parent_id = match parent_id {
-                Some(s) => Some(uuid::Uuid::parse_str(&s).map_err(|e| rusqlite::Error::FromSqlConversionFailure(4, rusqlite::types::Type::Text, Box::new(e)))?),
+                Some(s) => Some(uuid::Uuid::parse_str(&s).map_err(|e| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        4,
+                        rusqlite::types::Type::Text,
+                        Box::new(e),
+                    )
+                })?),
                 None => None,
             };
             Ok(Node {
@@ -255,7 +311,6 @@ impl Store {
         Ok(edges)
     }
 
-
     /// Находит узел файла (kind = 'file') по пути. У символов путь совпадает с путём файла.
     pub fn find_file_node_by_path(&self, path: &str) -> Result<Option<Node>> {
         let mut stmt = self.conn.prepare(&format!(
@@ -270,14 +325,21 @@ impl Store {
 
     /// Связи из других файлов в узлы этого файла: (ребро, имя и вид узла-цели).
     /// Нужны, чтобы перепривязать их после переиндексации изменённого файла.
-    pub fn incoming_edges_from_other_files(&self, path: &str) -> Result<Vec<(Edge, String, String)>> {
+    pub fn incoming_edges_from_other_files(
+        &self,
+        path: &str,
+    ) -> Result<Vec<(Edge, String, String)>> {
         let mut stmt = self.conn.prepare(
             "SELECT e.src_id, e.dst_id, e.kind, e.confidence, e.weight, d.name, d.kind
              FROM edge e JOIN node d ON d.id = e.dst_id JOIN node s ON s.id = e.src_id
              WHERE d.path = ?1 AND s.path != ?1",
         )?;
         let rows = stmt.query_map(params![path], |row| {
-            Ok((parse_edge(row)?, row.get::<_, String>(5)?, row.get::<_, String>(6)?))
+            Ok((
+                parse_edge(row)?,
+                row.get::<_, String>(5)?,
+                row.get::<_, String>(6)?,
+            ))
         })?;
         let mut out = Vec::new();
         for r in rows {
@@ -297,7 +359,8 @@ impl Store {
             "DELETE FROM file_meta WHERE node_id IN (SELECT id FROM node WHERE path = ?1)",
             params![path],
         )?;
-        self.conn.execute("DELETE FROM node WHERE path = ?1", params![path])?;
+        self.conn
+            .execute("DELETE FROM node WHERE path = ?1", params![path])?;
         Ok(())
     }
 
@@ -316,7 +379,9 @@ impl Store {
 
     /// Все рёбра индекса.
     pub fn get_all_edges(&self) -> Result<Vec<Edge>> {
-        let mut stmt = self.conn.prepare("SELECT src_id, dst_id, kind, confidence, weight FROM edge")?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT src_id, dst_id, kind, confidence, weight FROM edge")?;
         let rows = stmt.query_map([], parse_edge)?;
         let mut out = Vec::new();
         for r in rows {
@@ -343,9 +408,9 @@ impl Store {
 
     /// Все узлы-файлы индекса.
     pub fn file_nodes(&self) -> Result<Vec<Node>> {
-        let mut stmt = self
-            .conn
-            .prepare(&format!("SELECT {NODE_COLS} FROM node WHERE kind = 'file' ORDER BY path"))?;
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT {NODE_COLS} FROM node WHERE kind = 'file' ORDER BY path"
+        ))?;
         let rows = stmt.query_map([], row_to_node)?;
         let mut out = Vec::new();
         for r in rows {
@@ -421,7 +486,9 @@ impl Store {
 
     /// Пути всех файлов, которые есть в индексе.
     pub fn file_paths(&self) -> Result<Vec<String>> {
-        let mut stmt = self.conn.prepare("SELECT path FROM node WHERE kind = 'file'")?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT path FROM node WHERE kind = 'file'")?;
         let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
         let mut out = Vec::new();
         for r in rows {
@@ -458,10 +525,12 @@ impl Store {
 
     /// Корень проекта и время последней индексации (если проект уже индексировался).
     pub fn project_info(&self) -> Result<Option<(String, Option<String>)>> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT root_path, last_indexed_at FROM project ORDER BY created_at DESC LIMIT 1")?;
-        let mut rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?)))?;
+        let mut stmt = self.conn.prepare(
+            "SELECT root_path, last_indexed_at FROM project ORDER BY created_at DESC LIMIT 1",
+        )?;
+        let mut rows = stmt.query_map([], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?))
+        })?;
         match rows.next() {
             Some(r) => Ok(Some(r?)),
             None => Ok(None),
@@ -495,7 +564,14 @@ impl Store {
     }
 
     /// Записывает вызов инструмента в журнал (раздел 10.3 ТЗ).
-    pub fn log_call(&self, session_id: &str, tool: &str, args: &str, tokens_out: usize, node_ids: &str) -> Result<()> {
+    pub fn log_call(
+        &self,
+        session_id: &str,
+        tool: &str,
+        args: &str,
+        tokens_out: usize,
+        node_ids: &str,
+    ) -> Result<()> {
         self.conn.execute(
             "INSERT INTO call_log (session_id, tool, args, tokens_out, node_ids) VALUES (?1, ?2, ?3, ?4, ?5)",
             params![session_id, tool, args, tokens_out as i64, node_ids],
@@ -505,7 +581,9 @@ impl Store {
 
     /// Проверка целостности базы для `atlas doctor`.
     pub fn integrity_check(&self) -> Result<String> {
-        let r: String = self.conn.query_row("PRAGMA integrity_check", [], |r| r.get(0))?;
+        let r: String = self
+            .conn
+            .query_row("PRAGMA integrity_check", [], |r| r.get(0))?;
         Ok(r)
     }
 
@@ -516,9 +594,9 @@ impl Store {
 
     /// Находит узел каталога по точному пути (не путать с файлом/символом с тем же путём).
     pub fn find_dir_node_by_path(&self, path: &str) -> Result<Option<Node>> {
-        let mut stmt = self
-            .conn
-            .prepare(&format!("SELECT {NODE_COLS} FROM node WHERE path = ?1 AND kind = 'dir'"))?;
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT {NODE_COLS} FROM node WHERE path = ?1 AND kind = 'dir'"
+        ))?;
         let mut rows = stmt.query_map(params![path], row_to_node)?;
         match rows.next() {
             Some(r) => Ok(Some(r?)),
@@ -548,7 +626,9 @@ impl Store {
 
     /// Читает настройку проекта.
     pub fn get_setting(&self, key: &str) -> Result<Option<String>> {
-        let mut stmt = self.conn.prepare("SELECT value FROM settings WHERE key = ?1")?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT value FROM settings WHERE key = ?1")?;
         let mut rows = stmt.query_map(params![key], |r| r.get::<_, String>(0))?;
         match rows.next() {
             Some(r) => Ok(Some(r?)),
@@ -558,7 +638,9 @@ impl Store {
 
     /// Все настройки проекта.
     pub fn all_settings(&self) -> Result<Vec<(String, String)>> {
-        let mut stmt = self.conn.prepare("SELECT key, value FROM settings ORDER BY key")?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT key, value FROM settings ORDER BY key")?;
         let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
         let mut out = Vec::new();
         for r in rows {
@@ -571,7 +653,9 @@ impl Store {
     pub fn file_count(&self) -> Result<i64> {
         Ok(self
             .conn
-            .query_row("SELECT COUNT(*) FROM node WHERE kind = 'file'", [], |r| r.get(0))?)
+            .query_row("SELECT COUNT(*) FROM node WHERE kind = 'file'", [], |r| {
+                r.get(0)
+            })?)
     }
 
     /// Самое позднее время изменения среди файлов индекса (RFC3339, лексикографически сравнимо).
@@ -608,7 +692,11 @@ impl Store {
             "SELECT tool, COUNT(*), COALESCE(SUM(tokens_out), 0) FROM call_log GROUP BY tool ORDER BY 3 DESC",
         )?;
         let rows = stmt.query_map([], |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?))
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, i64>(1)?,
+                r.get::<_, i64>(2)?,
+            ))
         })?;
         let mut out = Vec::new();
         for r in rows {
@@ -685,11 +773,13 @@ fn parse_node_kind(s: &str) -> Result<NodeKind> {
 
 fn parse_edge(row: &rusqlite::Row<'_>) -> rusqlite::Result<Edge> {
     let src_id_str: String = row.get(0)?;
-    let src_id = uuid::Uuid::parse_str(&src_id_str)
-        .map_err(|e| rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e)))?;
+    let src_id = uuid::Uuid::parse_str(&src_id_str).map_err(|e| {
+        rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e))
+    })?;
     let dst_id_str: String = row.get(1)?;
-    let dst_id = uuid::Uuid::parse_str(&dst_id_str)
-        .map_err(|e| rusqlite::Error::FromSqlConversionFailure(1, rusqlite::types::Type::Text, Box::new(e)))?;
+    let dst_id = uuid::Uuid::parse_str(&dst_id_str).map_err(|e| {
+        rusqlite::Error::FromSqlConversionFailure(1, rusqlite::types::Type::Text, Box::new(e))
+    })?;
     let kind_str: String = row.get(2)?;
     let kind = match kind_str.as_str() {
         "contains" => EdgeKind::Contains,
@@ -699,14 +789,26 @@ fn parse_edge(row: &rusqlite::Row<'_>) -> rusqlite::Result<Edge> {
         "tests" => EdgeKind::Tests,
         "mentions" => EdgeKind::Mentions,
         "co_changes" => EdgeKind::CoChanges,
-        other => return Err(rusqlite::Error::InvalidColumnType(2, other.to_string(), rusqlite::types::Type::Text)),
+        other => {
+            return Err(rusqlite::Error::InvalidColumnType(
+                2,
+                other.to_string(),
+                rusqlite::types::Type::Text,
+            ))
+        }
     };
     let conf_str: String = row.get(3)?;
     let confidence = match conf_str.as_str() {
         "certain" => Confidence::Certain,
         "likely" => Confidence::Likely,
         "guess" => Confidence::Guess,
-        other => return Err(rusqlite::Error::InvalidColumnType(3, other.to_string(), rusqlite::types::Type::Text)),
+        other => {
+            return Err(rusqlite::Error::InvalidColumnType(
+                3,
+                other.to_string(),
+                rusqlite::types::Type::Text,
+            ))
+        }
     };
     Ok(Edge {
         src_id,

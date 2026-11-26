@@ -5,8 +5,8 @@
 
 use crate::indexer::ProjectIndexer;
 use crate::support::atlas_hash;
-use atlas_store::db::Store;
 use anyhow::Result;
+use atlas_store::db::Store;
 
 /// Обновление индекса по изменённым файлам.
 pub struct IncrementalUpdater<'a> {
@@ -31,7 +31,8 @@ impl<'a> IncrementalUpdater<'a> {
                 return Ok(false);
             }
         }
-        let stats = ProjectIndexer::new(self.store, &self.root_path).index_content(rel_path, content)?;
+        let stats =
+            ProjectIndexer::new(self.store, &self.root_path).index_content(rel_path, content)?;
         Ok(stats.files_indexed > 0)
     }
 
@@ -72,8 +73,14 @@ mod tests {
         let mut upd = IncrementalUpdater::new(&mut store, dir.path().to_str().unwrap());
 
         let content = "def foo():\n    return 1\n";
-        assert!(upd.update_file("a.py", content).unwrap(), "первый раз индексируется");
-        assert!(!upd.update_file("a.py", content).unwrap(), "повторный — пропуск по хешу");
+        assert!(
+            upd.update_file("a.py", content).unwrap(),
+            "первый раз индексируется"
+        );
+        assert!(
+            !upd.update_file("a.py", content).unwrap(),
+            "повторный — пропуск по хешу"
+        );
     }
 
     #[test]
@@ -84,14 +91,17 @@ mod tests {
 
         {
             let mut upd = IncrementalUpdater::new(&mut store, &root);
-            upd.update_file("a.py", "def foo():\n    return 1\n").unwrap();
+            upd.update_file("a.py", "def foo():\n    return 1\n")
+                .unwrap();
         }
         let foo_before = store.symbols_by_name("foo").unwrap().len();
         assert_eq!(foo_before, 1);
 
         {
             let mut upd = IncrementalUpdater::new(&mut store, &root);
-            assert!(upd.update_file("a.py", "def foo():\n    return 2\n").unwrap());
+            assert!(upd
+                .update_file("a.py", "def foo():\n    return 2\n")
+                .unwrap());
         }
         assert_eq!(
             store.symbols_by_name("foo").unwrap().len(),

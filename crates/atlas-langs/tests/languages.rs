@@ -14,7 +14,10 @@ fn check(path: &str, code: &str, expected: &[&str]) {
 fn contains(path: &str, code: &str, expected: &[&str]) {
     let found = names(path, code);
     for name in expected {
-        assert!(found.iter().any(|f| f == name), "{path}: нет {name} в {found:?}");
+        assert!(
+            found.iter().any(|f| f == name),
+            "{path}: нет {name} в {found:?}"
+        );
     }
 }
 
@@ -92,8 +95,16 @@ fn other_languages() {
     contains("a.rs", "pub fn hello() {}\n", &["hello"]);
     contains("a.py", "def hello():\n    pass\n", &["hello"]);
     contains("a.ts", "export function hello() {}\n", &["hello"]);
-    contains("a.go", "package a\nfunc Hello() {}\nvar Ответ = 1\n", &["Hello"]);
-    contains("A.java", "class Hello { void run() {} }\n", &["Hello", "run"]);
+    contains(
+        "a.go",
+        "package a\nfunc Hello() {}\nvar Ответ = 1\n",
+        &["Hello"],
+    );
+    contains(
+        "A.java",
+        "class Hello { void run() {} }\n",
+        &["Hello", "run"],
+    );
     contains("a.cs", "class Hello { void Run() {} }\n", &["Hello", "Run"]);
     contains("a.swift", "func hello() {}\n", &["hello"]);
     contains("a.lua", "function hello() end\n", &["hello"]);

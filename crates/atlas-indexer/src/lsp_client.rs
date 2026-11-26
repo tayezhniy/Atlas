@@ -8,15 +8,13 @@
 
 use anyhow::{Context, Result};
 use lsp_types::{
-    CallHierarchyIncomingCallsParams, CallHierarchyItem, CallHierarchyOutgoingCallsParams,
-    CallHierarchyPrepareParams, DidOpenTextDocumentParams, HoverParams, InitializeParams,
-    InitializedParams, Location, Position,
-    ReferenceParams, TextDocumentIdentifier, TextDocumentItem,
-    TextDocumentPositionParams, WorkDoneProgressParams, WorkspaceFolder,
-    ClientCapabilities, TextDocumentClientCapabilities,
-    CallHierarchyClientCapabilities, HoverClientCapabilities,
-    ReferenceClientCapabilities,
-    WorkspaceClientCapabilities,
+    CallHierarchyClientCapabilities, CallHierarchyIncomingCallsParams, CallHierarchyItem,
+    CallHierarchyOutgoingCallsParams, CallHierarchyPrepareParams, ClientCapabilities,
+    DidOpenTextDocumentParams, HoverClientCapabilities, HoverParams, InitializeParams,
+    InitializedParams, Location, Position, ReferenceClientCapabilities, ReferenceParams,
+    TextDocumentClientCapabilities, TextDocumentIdentifier, TextDocumentItem,
+    TextDocumentPositionParams, WorkDoneProgressParams, WorkspaceClientCapabilities,
+    WorkspaceFolder,
 };
 use serde_json::{json, Value as JsonValue};
 use std::collections::HashMap;
@@ -24,7 +22,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
-use tokio::sync::{Mutex, RwLock, mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, Mutex, RwLock};
 use tracing::{debug, info};
 use url::Url;
 
@@ -102,14 +100,22 @@ impl LspClient {
             return Ok(());
         }
 
-        info!("starting LSP server: {} {}", config.command, config.args.join(" "));
+        info!(
+            "starting LSP server: {} {}",
+            config.command,
+            config.args.join(" ")
+        );
 
         let mut cmd = Command::new(config.command);
         cmd.args(config.args)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
-            .current_dir(self.root_uri.to_file_path().unwrap_or_else(|_| PathBuf::from(".")));
+            .current_dir(
+                self.root_uri
+                    .to_file_path()
+                    .unwrap_or_else(|_| PathBuf::from(".")),
+            );
 
         let mut child = cmd.spawn().context("failed to spawn LSP server")?;
 
@@ -222,7 +228,12 @@ impl LspClient {
     }
 
     /// Получает call hierarchy incoming calls (кто вызывает этот символ).
-    pub async fn incoming_calls(&self, path: &Path, line: u32, character: u32) -> Result<Vec<CallInfo>> {
+    pub async fn incoming_calls(
+        &self,
+        path: &Path,
+        line: u32,
+        character: u32,
+    ) -> Result<Vec<CallInfo>> {
         let uri = Url::from_file_path(path.canonicalize()?)
             .map_err(|_| anyhow::anyhow!("invalid file path"))?;
 
@@ -234,7 +245,9 @@ impl LspClient {
             work_done_progress_params: WorkDoneProgressParams::default(),
         };
 
-        let items: Vec<CallHierarchyItem> = self.request("textDocument/prepareCallHierarchy", prepare_params).await?;
+        let items: Vec<CallHierarchyItem> = self
+            .request("textDocument/prepareCallHierarchy", prepare_params)
+            .await?;
         if items.is_empty() {
             return Ok(vec![]);
         }
@@ -247,15 +260,23 @@ impl LspClient {
                 partial_result_params: Default::default(),
             };
 
-            let incoming: Vec<lsp_types::CallHierarchyIncomingCall> = self.request("callHierarchy/incomingCalls", params).await?;
+            let incoming: Vec<lsp_types::CallHierarchyIncomingCall> =
+                self.request("callHierarchy/incomingCalls", params).await?;
             for inc in incoming {
                 let from = inc.from;
                 let from_uri = from.uri.to_file_path().ok();
                 calls.push(CallInfo {
                     caller: from.name,
                     callee: item.name.clone(),
-                    caller_path: from_uri.map(|p| p.to_string_lossy().to_string()).unwrap_or_default(),
-                    callee_path: item.uri.to_file_path().ok().map(|p| p.to_string_lossy().to_string()).unwrap_or_default(),
+                    caller_path: from_uri
+                        .map(|p| p.to_string_lossy().to_string())
+                        .unwrap_or_default(),
+                    callee_path: item
+                        .uri
+                        .to_file_path()
+                        .ok()
+                        .map(|p| p.to_string_lossy().to_string())
+                        .unwrap_or_default(),
                     caller_line: from.selection_range.start.line,
                     callee_line: item.range.start.line,
                     kind: CallKind::CalledBy,
@@ -267,7 +288,12 @@ impl LspClient {
     }
 
     /// Получает call hierarchy outgoing calls (что вызывает этот символ).
-    pub async fn outgoing_calls(&self, path: &Path, line: u32, character: u32) -> Result<Vec<CallInfo>> {
+    pub async fn outgoing_calls(
+        &self,
+        path: &Path,
+        line: u32,
+        character: u32,
+    ) -> Result<Vec<CallInfo>> {
         let uri = Url::from_file_path(path.canonicalize()?)
             .map_err(|_| anyhow::anyhow!("invalid file path"))?;
 
@@ -279,7 +305,9 @@ impl LspClient {
             work_done_progress_params: WorkDoneProgressParams::default(),
         };
 
-        let items: Vec<CallHierarchyItem> = self.request("textDocument/prepareCallHierarchy", prepare_params).await?;
+        let items: Vec<CallHierarchyItem> = self
+            .request("textDocument/prepareCallHierarchy", prepare_params)
+            .await?;
         if items.is_empty() {
             return Ok(vec![]);
         }
@@ -292,15 +320,23 @@ impl LspClient {
                 partial_result_params: Default::default(),
             };
 
-            let outgoing: Vec<lsp_types::CallHierarchyOutgoingCall> = self.request("callHierarchy/outgoingCalls", params).await?;
+            let outgoing: Vec<lsp_types::CallHierarchyOutgoingCall> =
+                self.request("callHierarchy/outgoingCalls", params).await?;
             for out in outgoing {
                 let to = out.to;
                 let to_uri = to.uri.to_file_path().ok();
                 calls.push(CallInfo {
                     caller: item.name.clone(),
                     callee: to.name,
-                    caller_path: item.uri.to_file_path().ok().map(|p| p.to_string_lossy().to_string()).unwrap_or_default(),
-                    callee_path: to_uri.map(|p| p.to_string_lossy().to_string()).unwrap_or_default(),
+                    caller_path: item
+                        .uri
+                        .to_file_path()
+                        .ok()
+                        .map(|p| p.to_string_lossy().to_string())
+                        .unwrap_or_default(),
+                    callee_path: to_uri
+                        .map(|p| p.to_string_lossy().to_string())
+                        .unwrap_or_default(),
                     caller_line: item.range.start.line,
                     callee_line: to.range.start.line,
                     kind: CallKind::Calls,
@@ -312,7 +348,12 @@ impl LspClient {
     }
 
     /// Получает определение символа (go to definition).
-    pub async fn goto_definition(&self, path: &Path, line: u32, character: u32) -> Result<Vec<Location>> {
+    pub async fn goto_definition(
+        &self,
+        path: &Path,
+        line: u32,
+        character: u32,
+    ) -> Result<Vec<Location>> {
         let uri = Url::from_file_path(path.canonicalize()?)
             .map_err(|_| anyhow::anyhow!("invalid file path"))?;
 
@@ -321,19 +362,29 @@ impl LspClient {
             position: Position { line, character },
         };
 
-        let result: lsp_types::GotoDefinitionResponse = self.request("textDocument/definition", params).await?;
+        let result: lsp_types::GotoDefinitionResponse =
+            self.request("textDocument/definition", params).await?;
         Ok(match result {
             lsp_types::GotoDefinitionResponse::Scalar(loc) => vec![loc],
             lsp_types::GotoDefinitionResponse::Array(locs) => locs,
-            lsp_types::GotoDefinitionResponse::Link(links) => links.into_iter().map(|l| Location {
-                uri: l.target_uri,
-                range: l.target_selection_range,
-            }).collect(),
+            lsp_types::GotoDefinitionResponse::Link(links) => links
+                .into_iter()
+                .map(|l| Location {
+                    uri: l.target_uri,
+                    range: l.target_selection_range,
+                })
+                .collect(),
         })
     }
 
     /// Находит все референсы к символу.
-    pub async fn find_references(&self, path: &Path, line: u32, character: u32, include_declaration: bool) -> Result<Vec<Location>> {
+    pub async fn find_references(
+        &self,
+        path: &Path,
+        line: u32,
+        character: u32,
+        include_declaration: bool,
+    ) -> Result<Vec<Location>> {
         let uri = Url::from_file_path(path.canonicalize()?)
             .map_err(|_| anyhow::anyhow!("invalid file path"))?;
 
@@ -342,7 +393,9 @@ impl LspClient {
                 text_document: TextDocumentIdentifier { uri },
                 position: Position { line, character },
             },
-            context: lsp_types::ReferenceContext { include_declaration },
+            context: lsp_types::ReferenceContext {
+                include_declaration,
+            },
             work_done_progress_params: WorkDoneProgressParams::default(),
             partial_result_params: Default::default(),
         };
@@ -352,7 +405,12 @@ impl LspClient {
     }
 
     /// Получает hover информацию.
-    pub async fn hover(&self, path: &Path, line: u32, character: u32) -> Result<Option<lsp_types::Hover>> {
+    pub async fn hover(
+        &self,
+        path: &Path,
+        line: u32,
+        character: u32,
+    ) -> Result<Option<lsp_types::Hover>> {
         let uri = Url::from_file_path(path.canonicalize()?)
             .map_err(|_| anyhow::anyhow!("invalid file path"))?;
 
@@ -368,7 +426,11 @@ impl LspClient {
     }
 
     /// Отправляет JSON-RPC запрос с ответом.
-    async fn request<P: serde::Serialize, R: serde::de::DeserializeOwned>(&self, method: &str, params: P) -> Result<R> {
+    async fn request<P: serde::Serialize, R: serde::de::DeserializeOwned>(
+        &self,
+        method: &str,
+        params: P,
+    ) -> Result<R> {
         let id = {
             let mut id_guard = self.request_id.lock().await;
             let id = *id_guard;
@@ -403,15 +465,20 @@ impl LspClient {
             Ok(received) => received.context("LSP request cancelled")?,
             Err(_) => {
                 self.pending.write().await.remove(&id);
-                anyhow::bail!("LSP-сервер не ответил на {method} за {} с", REQUEST_TIMEOUT.as_secs());
+                anyhow::bail!(
+                    "LSP-сервер не ответил на {method} за {} с",
+                    REQUEST_TIMEOUT.as_secs()
+                );
             }
         };
-        
+
         if let Some(error) = response.get("error") {
             return Err(anyhow::anyhow!("LSP error: {}", error));
         }
 
-        let result = response.get("result").context("no result in LSP response")?;
+        let result = response
+            .get("result")
+            .context("no result in LSP response")?;
         Ok(serde_json::from_value(result.clone())?)
     }
 
@@ -419,7 +486,7 @@ impl LspClient {
     async fn start_response_dispatcher(&self) {
         let pending = self.pending.clone();
         let response_rx = self.response_rx.clone();
-        
+
         tokio::spawn(async move {
             let mut rx = response_rx.lock().await;
             while let Some((id, value)) = rx.recv().await {
@@ -470,7 +537,8 @@ impl LspClient {
             Some("graphql") | Some("gql") => "graphql",
             Some("sql") => "sql",
             _ => "plaintext",
-        }.to_string()
+        }
+        .to_string()
     }
 
     /// Завершает работу LSP-сервера.
@@ -499,8 +567,8 @@ pub struct CallInfo {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum CallKind {
-    Calls,      // A вызывает B
-    CalledBy,   // B вызывается из A
+    Calls,    // A вызывает B
+    CalledBy, // B вызывается из A
 }
 
 /// Конфигурация LSP-сервера для языка
@@ -607,7 +675,10 @@ impl LspRegistry {
             Self::for_language("dart"),
             Self::for_language("swift"),
             Self::for_language("kotlin"),
-        ].into_iter().flatten().collect()
+        ]
+        .into_iter()
+        .flatten()
+        .collect()
     }
 }
 
@@ -636,9 +707,18 @@ mod tests {
 
     #[test]
     fn test_language_id() {
-        assert_eq!(LspClient::language_id_from_path(Path::new("test.rs")), "rust");
-        assert_eq!(LspClient::language_id_from_path(Path::new("test.py")), "python");
-        assert_eq!(LspClient::language_id_from_path(Path::new("test.ts")), "typescript");
+        assert_eq!(
+            LspClient::language_id_from_path(Path::new("test.rs")),
+            "rust"
+        );
+        assert_eq!(
+            LspClient::language_id_from_path(Path::new("test.py")),
+            "python"
+        );
+        assert_eq!(
+            LspClient::language_id_from_path(Path::new("test.ts")),
+            "typescript"
+        );
         assert_eq!(LspClient::language_id_from_path(Path::new("test.go")), "go");
     }
 }

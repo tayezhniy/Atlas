@@ -8,7 +8,10 @@ impl ResponseFormatter {
     }
 
     pub fn format_header(project: &str, index_state: &str, tokens: usize) -> String {
-        format!("project={} index={} tokens={}", project, index_state, tokens)
+        format!(
+            "project={} index={} tokens={}",
+            project, index_state, tokens
+        )
     }
 
     pub fn format_path_alias(alias: &str, path: &str) -> String {

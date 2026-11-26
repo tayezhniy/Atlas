@@ -8,11 +8,23 @@ use atlas_langs::{LanguageParser, SymbolKind};
 #[test]
 fn detect_language_by_extension() {
     assert_eq!(LanguageParser::detect_language("src/main.rs"), Some("rust"));
-    assert_eq!(LanguageParser::detect_language("app/main.py"), Some("python"));
-    assert_eq!(LanguageParser::detect_language("src/app.ts"), Some("typescript"));
-    assert_eq!(LanguageParser::detect_language("src/app.tsx"), Some("typescript"));
+    assert_eq!(
+        LanguageParser::detect_language("app/main.py"),
+        Some("python")
+    );
+    assert_eq!(
+        LanguageParser::detect_language("src/app.ts"),
+        Some("typescript")
+    );
+    assert_eq!(
+        LanguageParser::detect_language("src/app.tsx"),
+        Some("typescript")
+    );
     // tree-sitter-typescript разбирает и JS
-    assert_eq!(LanguageParser::detect_language("src/app.js"), Some("typescript"));
+    assert_eq!(
+        LanguageParser::detect_language("src/app.js"),
+        Some("typescript")
+    );
     assert_eq!(LanguageParser::detect_language("README.md"), None);
     assert_eq!(LanguageParser::detect_language("Makefile"), None);
 }
@@ -38,7 +50,10 @@ fn helper(path: &str) -> String {
 "#;
     let parsed = parser.parse("src/lib.rs", code).expect("rust parse");
     assert_eq!(parsed.language, "rust");
-    assert!(!parsed.imports.is_empty(), "должен быть импорт std::collections::HashMap");
+    assert!(
+        !parsed.imports.is_empty(),
+        "должен быть импорт std::collections::HashMap"
+    );
 
     let names: Vec<&str> = parsed.symbols.iter().map(|s| s.name.as_str()).collect();
     assert!(names.contains(&"Config"), "нет структуры Config: {names:?}");
@@ -47,8 +62,14 @@ fn helper(path: &str) -> String {
 
     let kinds: Vec<SymbolKind> = parsed.symbols.iter().map(|s| s.kind.clone()).collect();
     // struct_item отображается в Class, fn — в Function
-    assert!(kinds.contains(&SymbolKind::Class), "нет узла класса/структуры: {kinds:?}");
-    assert!(kinds.contains(&SymbolKind::Function), "нет функции: {kinds:?}");
+    assert!(
+        kinds.contains(&SymbolKind::Class),
+        "нет узла класса/структуры: {kinds:?}"
+    );
+    assert!(
+        kinds.contains(&SymbolKind::Function),
+        "нет функции: {kinds:?}"
+    );
 
     assert!(
         parsed.calls.iter().any(|c| c.callee.contains("helper")),
@@ -73,7 +94,12 @@ def main() -> None:
 "#;
     let parsed = parser.parse("service/main.py", code).expect("python parse");
     assert_eq!(parsed.language, "python");
-    assert_eq!(parsed.imports.len(), 2, "ожидались два импорта: {:?}", parsed.imports);
+    assert_eq!(
+        parsed.imports.len(),
+        2,
+        "ожидались два импорта: {:?}",
+        parsed.imports
+    );
 
     let names: Vec<&str> = parsed.symbols.iter().map(|s| s.name.as_str()).collect();
     assert!(names.contains(&"Service"), "нет класса Service: {names:?}");
@@ -97,7 +123,9 @@ export class Client implements Api {
     }
 }
 "#;
-    let parsed = parser.parse("src/client.ts", code).expect("typescript parse");
+    let parsed = parser
+        .parse("src/client.ts", code)
+        .expect("typescript parse");
     assert_eq!(parsed.language, "typescript");
     assert!(!parsed.imports.is_empty(), "должен быть импорт ./helper");
 
@@ -134,8 +162,14 @@ fn empty_file_yields_no_symbols() {
 fn detect_new_languages_by_extension() {
     assert_eq!(LanguageParser::detect_language("main.go"), Some("go"));
     assert_eq!(LanguageParser::detect_language("Main.java"), Some("java"));
-    assert_eq!(LanguageParser::detect_language("Program.cs"), Some("c_sharp"));
-    assert_eq!(LanguageParser::detect_language("script.jsx"), Some("typescript"));
+    assert_eq!(
+        LanguageParser::detect_language("Program.cs"),
+        Some("c_sharp")
+    );
+    assert_eq!(
+        LanguageParser::detect_language("script.jsx"),
+        Some("typescript")
+    );
 }
 
 #[test]
@@ -169,7 +203,11 @@ func main() {
 "#;
     let parsed = parser.parse("main.go", code).expect("go parse");
     assert_eq!(parsed.language, "go");
-    assert!(!parsed.imports.is_empty(), "должен быть импорт fmt/strings: {:?}", parsed.imports);
+    assert!(
+        !parsed.imports.is_empty(),
+        "должен быть импорт fmt/strings: {:?}",
+        parsed.imports
+    );
 
     let names: Vec<&str> = parsed.symbols.iter().map(|s| s.name.as_str()).collect();
     assert!(names.contains(&"Config"), "нет структуры Config: {names:?}");
@@ -178,8 +216,14 @@ func main() {
     assert!(names.contains(&"main"), "нет функции main: {names:?}");
 
     let kinds: Vec<SymbolKind> = parsed.symbols.iter().map(|s| s.kind.clone()).collect();
-    assert!(kinds.contains(&SymbolKind::Class), "нет узла класса/структуры: {kinds:?}");
-    assert!(kinds.contains(&SymbolKind::Function), "нет функции: {kinds:?}");
+    assert!(
+        kinds.contains(&SymbolKind::Class),
+        "нет узла класса/структуры: {kinds:?}"
+    );
+    assert!(
+        kinds.contains(&SymbolKind::Function),
+        "нет функции: {kinds:?}"
+    );
     // Method detection depends on language grammar; some grammars don't distinguish
     // assert!(kinds.contains(&SymbolKind::Method), "нет метода: {kinds:?}");
 
@@ -222,7 +266,11 @@ public class Client implements Api {
 "#;
     let parsed = parser.parse("Client.java", code).expect("java parse");
     assert_eq!(parsed.language, "java");
-    assert!(!parsed.imports.is_empty(), "должен быть импорт java.util: {:?}", parsed.imports);
+    assert!(
+        !parsed.imports.is_empty(),
+        "должен быть импорт java.util: {:?}",
+        parsed.imports
+    );
 
     let names: Vec<&str> = parsed.symbols.iter().map(|s| s.name.as_str()).collect();
     assert!(names.contains(&"Api"), "нет интерфейса Api: {names:?}");
@@ -231,7 +279,10 @@ public class Client implements Api {
     assert!(names.contains(&"helper"), "нет метода helper: {names:?}");
 
     let kinds: Vec<SymbolKind> = parsed.symbols.iter().map(|s| s.kind.clone()).collect();
-    assert!(kinds.contains(&SymbolKind::Interface), "нет интерфейса: {kinds:?}");
+    assert!(
+        kinds.contains(&SymbolKind::Interface),
+        "нет интерфейса: {kinds:?}"
+    );
     assert!(kinds.contains(&SymbolKind::Class), "нет класса: {kinds:?}");
     // Method detection depends on language grammar
     // assert!(kinds.contains(&SymbolKind::Method), "нет метода: {kinds:?}");
@@ -274,7 +325,11 @@ namespace MyApp
 "#;
     let parsed = parser.parse("Client.cs", code).expect("csharp parse");
     assert_eq!(parsed.language, "c_sharp");
-    assert!(!parsed.imports.is_empty(), "должен быть using: {:?}", parsed.imports);
+    assert!(
+        !parsed.imports.is_empty(),
+        "должен быть using: {:?}",
+        parsed.imports
+    );
 
     let names: Vec<&str> = parsed.symbols.iter().map(|s| s.name.as_str()).collect();
     assert!(names.contains(&"IApi"), "нет интерфейса IApi: {names:?}");
@@ -283,7 +338,10 @@ namespace MyApp
     assert!(names.contains(&"Helper"), "нет метода Helper: {names:?}");
 
     let kinds: Vec<SymbolKind> = parsed.symbols.iter().map(|s| s.kind.clone()).collect();
-    assert!(kinds.contains(&SymbolKind::Interface), "нет интерфейса: {kinds:?}");
+    assert!(
+        kinds.contains(&SymbolKind::Interface),
+        "нет интерфейса: {kinds:?}"
+    );
     assert!(kinds.contains(&SymbolKind::Class), "нет класса: {kinds:?}");
     // Method detection depends on language grammar
     // assert!(kinds.contains(&SymbolKind::Method), "нет метода: {kinds:?}");
@@ -304,25 +362,51 @@ defmodule MyModule do
   end
 end
 "#;
-    let parsed = parser.parse("lib/my_module.ex", code).expect("elixir parse");
+    let parsed = parser
+        .parse("lib/my_module.ex", code)
+        .expect("elixir parse");
     assert_eq!(parsed.language, "elixir");
-    
+
     // Check imports
     let import_paths: Vec<String> = parsed.imports.iter().map(|i| i.to.clone()).collect();
-    assert!(import_paths.iter().any(|p| p.contains("OtherModule")), "imports: {:?}", import_paths);
-    assert!(import_paths.iter().any(|p| p.contains("SomeModule")), "imports: {:?}", import_paths);
-    assert!(import_paths.iter().any(|p| p.contains("Logger")), "imports: {:?}", import_paths);
-    
+    assert!(
+        import_paths.iter().any(|p| p.contains("OtherModule")),
+        "imports: {:?}",
+        import_paths
+    );
+    assert!(
+        import_paths.iter().any(|p| p.contains("SomeModule")),
+        "imports: {:?}",
+        import_paths
+    );
+    assert!(
+        import_paths.iter().any(|p| p.contains("Logger")),
+        "imports: {:?}",
+        import_paths
+    );
+
     // Check symbols
     let names: Vec<&str> = parsed.symbols.iter().map(|s| s.name.as_str()).collect();
     assert!(names.contains(&"MyModule"), "symbols: {:?}", names);
     assert!(names.contains(&"run"), "symbols: {:?}", names);
-    
+
     // Check calls
     let callees: Vec<String> = parsed.calls.iter().map(|c| c.callee.clone()).collect();
-    assert!(callees.iter().any(|c| c.contains("func")), "calls: {:?}", callees);
-    assert!(callees.iter().any(|c| c.contains("other")), "calls: {:?}", callees);
-    assert!(callees.iter().any(|c| c.contains("info")), "calls: {:?}", callees);
+    assert!(
+        callees.iter().any(|c| c.contains("func")),
+        "calls: {:?}",
+        callees
+    );
+    assert!(
+        callees.iter().any(|c| c.contains("other")),
+        "calls: {:?}",
+        callees
+    );
+    assert!(
+        callees.iter().any(|c| c.contains("info")),
+        "calls: {:?}",
+        callees
+    );
 }
 
 #[test]
@@ -343,22 +427,46 @@ main = do
 "#;
     let parsed = parser.parse("Main.hs", code).expect("haskell parse");
     assert_eq!(parsed.language, "haskell");
-    
+
     // Check imports
     let import_paths: Vec<String> = parsed.imports.iter().map(|i| i.to.clone()).collect();
-    assert!(import_paths.iter().any(|p| p.contains("Data.List")), "imports: {:?}", import_paths);
-    assert!(import_paths.iter().any(|p| p.contains("Data.Map")), "imports: {:?}", import_paths);
-    assert!(import_paths.iter().any(|p| p.contains("Data.Maybe")), "imports: {:?}", import_paths);
-    
+    assert!(
+        import_paths.iter().any(|p| p.contains("Data.List")),
+        "imports: {:?}",
+        import_paths
+    );
+    assert!(
+        import_paths.iter().any(|p| p.contains("Data.Map")),
+        "imports: {:?}",
+        import_paths
+    );
+    assert!(
+        import_paths.iter().any(|p| p.contains("Data.Maybe")),
+        "imports: {:?}",
+        import_paths
+    );
+
     // Check symbols
     let names: Vec<&str> = parsed.symbols.iter().map(|s| s.name.as_str()).collect();
     assert!(names.contains(&"main"), "symbols: {:?}", names);
-    
+
     // Check calls
     let callees: Vec<String> = parsed.calls.iter().map(|c| c.callee.clone()).collect();
-    assert!(callees.iter().any(|c| c.contains("print")), "calls: {:?}", callees);
-    assert!(callees.iter().any(|c| c.contains("Map.lookup")), "calls: {:?}", callees);
-    assert!(callees.iter().any(|c| c.contains("fromMaybe")), "calls: {:?}", callees);
+    assert!(
+        callees.iter().any(|c| c.contains("print")),
+        "calls: {:?}",
+        callees
+    );
+    assert!(
+        callees.iter().any(|c| c.contains("Map.lookup")),
+        "calls: {:?}",
+        callees
+    );
+    assert!(
+        callees.iter().any(|c| c.contains("fromMaybe")),
+        "calls: {:?}",
+        callees
+    );
 }
 
 #[test]
@@ -377,20 +485,32 @@ let () =
 "#;
     let parsed = parser.parse("test.ml", code).expect("ocaml parse");
     assert_eq!(parsed.language, "ocaml");
-    
+
     // Check imports
     let import_paths: Vec<String> = parsed.imports.iter().map(|i| i.to.clone()).collect();
-    assert!(import_paths.iter().any(|p| p == "Base"), "imports: {:?}", import_paths);
-    assert!(import_paths.iter().any(|p| p == "Core"), "imports: {:?}", import_paths);
-    
+    assert!(
+        import_paths.iter().any(|p| p == "Base"),
+        "imports: {:?}",
+        import_paths
+    );
+    assert!(
+        import_paths.iter().any(|p| p == "Core"),
+        "imports: {:?}",
+        import_paths
+    );
+
     // Check symbols
     let names: Vec<&str> = parsed.symbols.iter().map(|s| s.name.as_str()).collect();
     assert!(names.contains(&"MyModule"), "symbols: {:?}", names);
     assert!(names.contains(&"func"), "symbols: {:?}", names);
-    
+
     // Check calls
     let callees: Vec<String> = parsed.calls.iter().map(|c| c.callee.clone()).collect();
-    assert!(callees.iter().any(|c| c.contains("func")), "calls: {:?}", callees);
+    assert!(
+        callees.iter().any(|c| c.contains("func")),
+        "calls: {:?}",
+        callees
+    );
 }
 
 #[test]
@@ -418,22 +538,42 @@ class MyClass {
 "#;
     let parsed = parser.parse("main.dart", code).expect("dart parse");
     assert_eq!(parsed.language, "dart");
-    
+
     // Check imports
     let import_paths: Vec<String> = parsed.imports.iter().map(|i| i.to.clone()).collect();
-    assert!(import_paths.iter().any(|p| p.contains("flutter")), "imports: {:?}", import_paths);
-    assert!(import_paths.iter().any(|p| p.contains("my_helper")), "imports: {:?}", import_paths);
-    
+    assert!(
+        import_paths.iter().any(|p| p.contains("flutter")),
+        "imports: {:?}",
+        import_paths
+    );
+    assert!(
+        import_paths.iter().any(|p| p.contains("my_helper")),
+        "imports: {:?}",
+        import_paths
+    );
+
     // Check symbols
     let names: Vec<&str> = parsed.symbols.iter().map(|s| s.name.as_str()).collect();
     assert!(names.contains(&"main"), "symbols: {:?}", names);
     assert!(names.contains(&"helper"), "symbols: {:?}", names);
     assert!(names.contains(&"MyClass"), "symbols: {:?}", names);
     assert!(names.contains(&"method"), "symbols: {:?}", names);
-    
+
     // Check calls
     let callees: Vec<String> = parsed.calls.iter().map(|c| c.callee.clone()).collect();
-    assert!(callees.iter().any(|c| c.contains("print")), "calls: {:?}", callees);
-    assert!(callees.iter().any(|c| c.contains("helper")), "calls: {:?}", callees);
-    assert!(callees.iter().any(|c| c.contains("method")), "calls: {:?}", callees);
+    assert!(
+        callees.iter().any(|c| c.contains("print")),
+        "calls: {:?}",
+        callees
+    );
+    assert!(
+        callees.iter().any(|c| c.contains("helper")),
+        "calls: {:?}",
+        callees
+    );
+    assert!(
+        callees.iter().any(|c| c.contains("method")),
+        "calls: {:?}",
+        callees
+    );
 }

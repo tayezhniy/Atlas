@@ -52,7 +52,7 @@ impl McpServer {
         // Загружаем настройки проекта
         let mut tool_budgets = config.tool_budgets.clone();
         let mut closed_paths = config.closed_paths.clone();
-        
+
         if let Ok(settings) = store.all_settings() {
             for (key, value) in settings {
                 if key == "budgets" {
@@ -66,7 +66,7 @@ impl McpServer {
                 }
             }
         }
-        
+
         Self {
             config: McpConfig {
                 tool_budgets,
@@ -111,7 +111,10 @@ impl McpServer {
         let msg: Value = match serde_json::from_str(line) {
             Ok(v) => v,
             Err(e) => {
-                return Some(error_reply(Value::Null, -32700, &format!("некорректный JSON: {e}")).to_string());
+                return Some(
+                    error_reply(Value::Null, -32700, &format!("некорректный JSON: {e}"))
+                        .to_string(),
+                );
             }
         };
         let id = msg.get("id").cloned();
@@ -173,7 +176,10 @@ impl McpServer {
         let Some(tool) = Tool::from_name(name) else {
             return error_reply(id, -32602, &format!("неизвестный инструмент: {name}"));
         };
-        let args = params.get("arguments").cloned().unwrap_or_else(|| json!({}));
+        let args = params
+            .get("arguments")
+            .cloned()
+            .unwrap_or_else(|| json!({}));
         let ctx = ToolContext::new(
             self.session_id.clone(),
             tool.clone(),
@@ -186,8 +192,14 @@ impl McpServer {
 
         // Ошибки инструмента — не ошибки протокола: модель должна их увидеть и поправить вызов
         match self.registry.execute(&tool, &ctx) {
-            Ok(result) => ok_reply(id, json!({"content": [{"type": "text", "text": result.text}], "isError": false})),
-            Err(e) => ok_reply(id, json!({"content": [{"type": "text", "text": e.to_string()}], "isError": true})),
+            Ok(result) => ok_reply(
+                id,
+                json!({"content": [{"type": "text", "text": result.text}], "isError": false}),
+            ),
+            Err(e) => ok_reply(
+                id,
+                json!({"content": [{"type": "text", "text": e.to_string()}], "isError": true}),
+            ),
         }
     }
 }
@@ -207,7 +219,11 @@ mod tests {
     fn server() -> (tempfile::TempDir, McpServer) {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open(dir.path().join("i.db")).unwrap();
-        let s = McpServer::new(McpConfig::default(), store, dir.path().to_string_lossy().to_string());
+        let s = McpServer::new(
+            McpConfig::default(),
+            store,
+            dir.path().to_string_lossy().to_string(),
+        );
         (dir, s)
     }
 
@@ -226,38 +242,83 @@ mod tests {
     #[test]
     fn initialize_echoes_protocol_and_lists_tools() {
         let (_d, mut s) = server();
-        let r = call(&mut s, json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26"}}));
+        let r = call(
+            &mut s,
+            json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26"}}),
+        );
         assert_eq!(r["result"]["protocolVersion"], "2025-03-26");
         assert_eq!(r["result"]["serverInfo"]["name"], "atlas");
-        let r = call(&mut s, json!({"jsonrpc":"2.0","id":2,"method":"tools/list"}));
-        let names: Vec<&str> = r["result"]["tools"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
-        assert_eq!(names, ["overview", "search", "outline", "read", "neighbors", "context_for", "status"]);
+        let r = call(
+            &mut s,
+            json!({"jsonrpc":"2.0","id":2,"method":"tools/list"}),
+        );
+        let names: Vec<&str> = r["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "overview",
+                "search",
+                "outline",
+                "read",
+                "neighbors",
+                "context_for",
+                "status"
+            ]
+        );
     }
 
     #[test]
     fn notifications_get_no_reply() {
         let (_d, mut s) = server();
-        assert!(s.handle_message(r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#).is_none());
+        assert!(s
+            .handle_message(r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#)
+            .is_none());
     }
 
     #[test]
     fn tool_call_and_tool_error() {
         let (_d, mut s) = server();
-        let ok = call(&mut s, json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"status","arguments":{}}}));
+        let ok = call(
+            &mut s,
+            json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"status","arguments":{}}}),
+        );
         assert_eq!(ok["result"]["isError"], false);
-        assert!(ok["result"]["content"][0]["text"].as_str().unwrap().contains("Состояние индекса"));
-        let bad = call(&mut s, json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"read","arguments":{"symbol":"nope"}}}));
+        assert!(ok["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("Состояние индекса"));
+        let bad = call(
+            &mut s,
+            json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"read","arguments":{"symbol":"nope"}}}),
+        );
         assert_eq!(bad["result"]["isError"], true);
     }
 
     #[test]
     fn ui_method_returns_structured_data() {
         let (_d, mut s) = server();
-        let r = call(&mut s, json!({"jsonrpc":"2.0","id":7,"method":"atlas/ui","params":{"method":"overview"}}));
-        assert!(r["result"]["top"].is_array() && r["result"]["edges"].is_array(), "{r}");
-        let r = call(&mut s, json!({"jsonrpc":"2.0","id":8,"method":"atlas/ui","params":{"method":"search","args":{"query":"x"}}}));
+        let r = call(
+            &mut s,
+            json!({"jsonrpc":"2.0","id":7,"method":"atlas/ui","params":{"method":"overview"}}),
+        );
+        assert!(
+            r["result"]["top"].is_array() && r["result"]["edges"].is_array(),
+            "{r}"
+        );
+        let r = call(
+            &mut s,
+            json!({"jsonrpc":"2.0","id":8,"method":"atlas/ui","params":{"method":"search","args":{"query":"x"}}}),
+        );
         assert!(r["result"]["items"].is_array(), "{r}");
-        let r = call(&mut s, json!({"jsonrpc":"2.0","id":9,"method":"atlas/ui","params":{"method":"nope"}}));
+        let r = call(
+            &mut s,
+            json!({"jsonrpc":"2.0","id":9,"method":"atlas/ui","params":{"method":"nope"}}),
+        );
         assert_eq!(r["error"]["code"], -32000);
     }
 
@@ -266,7 +327,10 @@ mod tests {
         let (_d, mut s) = server();
         let r = call(&mut s, json!({"jsonrpc":"2.0","id":5,"method":"nope"}));
         assert_eq!(r["error"]["code"], -32601);
-        let r = call(&mut s, json!({"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"zzz"}}));
+        let r = call(
+            &mut s,
+            json!({"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"zzz"}}),
+        );
         assert_eq!(r["error"]["code"], -32602);
         let r: Value = serde_json::from_str(&s.handle_message("{не json").unwrap()).unwrap();
         assert_eq!(r["error"]["code"], -32700);

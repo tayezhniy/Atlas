@@ -3,16 +3,16 @@
 //! Связывает обход файлов, парсинг tree-sitter и запись в atlas-store.
 //! Один и тот же код индексирует и весь проект, и отдельные изменившиеся файлы.
 
+use crate::lsp_client::{LspClient, LspRegistry};
 use crate::support::{
     atlas_hash, estimate_tokens, is_generated_file, is_generic_name, is_test_file, map_symbol_kind,
     resolve_import_target as resolve_import, simple_name,
 };
-use crate::walker::{ProjectWalker, WalkedFile, WalkOptions};
-use crate::lsp_client::{LspClient, LspRegistry};
+use crate::walker::{ProjectWalker, WalkOptions, WalkedFile};
+use anyhow::Result;
 use atlas_langs::{LanguageParser, ParsedFile};
 use atlas_store::db::Store;
 use atlas_store::schema::{Confidence, Edge, EdgeKind, FileMeta, Node, NodeKind};
-use anyhow::Result;
 use chrono::Utc;
 use rusqlite::{params, OptionalExtension};
 use serde_json;
@@ -98,7 +98,7 @@ impl<'a> ProjectIndexer<'a> {
         let root_path = PathBuf::from(&self.root_path);
         let client = LspClient::new(&root_path).await?;
         let configs = LspRegistry::all();
-        
+
         for config in configs {
             if root_path.join(config.root_markers[0]).exists() {
                 if let Err(e) = client.ensure_started(&config).await {
@@ -108,7 +108,7 @@ impl<'a> ProjectIndexer<'a> {
                 }
             }
         }
-        
+
         self.lsp_client = Some(Arc::new(client));
         Ok(())
     }
@@ -124,11 +124,15 @@ impl<'a> ProjectIndexer<'a> {
         info!("Enhancing call graph with LSP call hierarchy...");
 
         // Получаем все символы-функции/методы из БД
-        let symbols = self.store.nodes_of_kinds(&[NodeKind::Function, NodeKind::Method])?;
+        let symbols = self
+            .store
+            .nodes_of_kinds(&[NodeKind::Function, NodeKind::Method])?;
 
         let mut enhanced_count = 0;
         for symbol in symbols {
-            let Some(line_start) = symbol.line_start else { continue };
+            let Some(line_start) = symbol.line_start else {
+                continue;
+            };
             let path = Path::new(&symbol.path);
 
             // Используем начало диапазона символа для позиции
@@ -143,7 +147,8 @@ impl<'a> ProjectIndexer<'a> {
             {
                 for inc in incoming {
                     if let Some(dst_id) = self.find_symbol_id(&inc.callee_path, &inc.callee) {
-                        if let Some(caller_id) = self.find_symbol_id(&inc.caller_path, &inc.caller) {
+                        if let Some(caller_id) = self.find_symbol_id(&inc.caller_path, &inc.caller)
+                        {
                             if caller_id != dst_id {
                                 self.store.upsert_edge(&Edge {
                                     src_id: caller_id,
@@ -163,7 +168,8 @@ impl<'a> ProjectIndexer<'a> {
             if let Ok(outgoing) = lsp_client.outgoing_calls(path, line, character).await {
                 for out in outgoing {
                     if let Some(caller_id) = self.find_symbol_id(&out.caller_path, &out.caller) {
-                        if let Some(callee_id) = self.find_symbol_id(&out.callee_path, &out.callee) {
+                        if let Some(callee_id) = self.find_symbol_id(&out.callee_path, &out.callee)
+                        {
                             if caller_id != callee_id {
                                 self.store.upsert_edge(&Edge {
                                     src_id: caller_id,
@@ -182,7 +188,10 @@ impl<'a> ProjectIndexer<'a> {
 
         if enhanced_count > 0 {
             self.stats.calls_linked += enhanced_count;
-            info!("LSP enhanced call graph with {} additional edges", enhanced_count);
+            info!(
+                "LSP enhanced call graph with {} additional edges",
+                enhanced_count
+            );
         }
 
         Ok(())
@@ -191,7 +200,7 @@ impl<'a> ProjectIndexer<'a> {
     /// Полная индексация проекта: обход, парсинг, запись в БД.
     pub fn index_project(&mut self) -> Result<IndexStats> {
         info!("Начало индексации проекта: {}", self.root_path);
-        
+
         // Инициализируем LSP-клиенты асинхронно
         let rt = tokio::runtime::Runtime::new()?;
         // LSP экспериментален и запускает внешние программы, поэтому только по явной просьбе
@@ -200,7 +209,7 @@ impl<'a> ProjectIndexer<'a> {
                 warn!("Failed to initialize LSP clients: {}", e);
             }
         }
-        
+
         self.upsert_project_record()?;
         self.drop_outdated_index()?;
         self.preload_maps()?;
@@ -679,7 +688,10 @@ impl<'a> ProjectIndexer<'a> {
         let mut imports_by_file: HashMap<String, Vec<Uuid>> = HashMap::new();
         for imp in imports {
             if let Some(dst) = self.resolve_import_target(&imp.target, &imp.from_path) {
-                imports_by_file.entry(imp.from_path.clone()).or_default().push(dst);
+                imports_by_file
+                    .entry(imp.from_path.clone())
+                    .or_default()
+                    .push(dst);
                 if dst != imp.src {
                     self.store.upsert_edge(&Edge {
                         src_id: imp.src,
@@ -713,10 +725,8 @@ impl<'a> ProjectIndexer<'a> {
                 // Сначала сужаем кандидатов до файлов, которые вызывающий файл
                 // импортирует: так имя `run` разрешается в `helper::run`, а не
                 // теряется из-за одноимённых методов в других модулях.
-                let imported: Vec<Uuid> = imports_by_file
-                    .get(&call.path)
-                    .cloned()
-                    .unwrap_or_default();
+                let imported: Vec<Uuid> =
+                    imports_by_file.get(&call.path).cloned().unwrap_or_default();
                 let scoped: Vec<Node> = candidates
                     .iter()
                     .filter(|n| {
@@ -751,9 +761,7 @@ impl<'a> ProjectIndexer<'a> {
                         .collect();
                     let callable: Vec<&Node> = candidates
                         .iter()
-                        .filter(|n| {
-                            matches!(n.kind, NodeKind::Function | NodeKind::Method)
-                        })
+                        .filter(|n| matches!(n.kind, NodeKind::Function | NodeKind::Method))
                         .collect();
                     if same_dir.len() == 1 {
                         (same_dir[0].id, Confidence::Guess)

@@ -44,7 +44,11 @@ pub fn search(store: &Store, query: &str, limit: usize) -> anyhow::Result<Vec<Se
 }
 
 /// Поиск по префиксу пути (для быстрой навигации по дереву файлов).
-pub fn search_by_path_prefix(store: &Store, prefix: &str, limit: usize) -> anyhow::Result<Vec<Node>> {
+pub fn search_by_path_prefix(
+    store: &Store,
+    prefix: &str,
+    limit: usize,
+) -> anyhow::Result<Vec<Node>> {
     let nodes = store.find_nodes_by_path_prefix(prefix)?;
     Ok(nodes.into_iter().take(limit).collect())
 }
