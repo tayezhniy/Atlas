@@ -461,7 +461,7 @@ export default function Settings({ projectPath, isOpen, onClose }: SettingsProps
 
         {/* Статусная строка */}
         <div className="border-t p-3 bg-muted/30 flex items-center justify-between text-xs text-muted-foreground">
-          <span className="text-amber-700">Настройки сохраняются в .atlas/index.db, но индексатор и MCP-сервер их пока не применяют.</span>
+          <span className="text-green-700">Настройки применяются: исключения и maxFileSize — в индексаторе; budgets и closedPaths — в MCP-сервере.</span>
         </div>
       </div>
     </div>

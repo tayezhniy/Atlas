@@ -615,7 +615,9 @@ class BenchmarkRunner:
         print("\nЭто симуляция без реальной модели: гейт ТЗ (раздел 14) ею не проверяется.")
 
 def main():
-    runs = int(sys.argv[1]) if len(sys.argv) > 1 else 3
+    # По ТЗ (раздел 14.1): одна прогонка на задачу, медиана по среднему и большому проектам
+    # Запускаем 1 раз для чистоты методики, но оставляем параметр для отладки
+    runs = int(sys.argv[1]) if len(sys.argv) > 1 else 1
     runner = BenchmarkRunner()
     runner.run_all(runs_per_task=runs)
 

@@ -1,9 +1,0 @@
-
-/// HTML-экранирование для безопасной вставки в HTML.
-fn html_escape(text: &str) -> String {
-    text.replace('&', "&")
-        .replace('<', "<")
-        .replace('>', ">")
-        .replace('"', """)
-        .replace('\'', "'")
-}

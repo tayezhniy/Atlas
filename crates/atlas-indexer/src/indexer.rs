@@ -7,7 +7,7 @@ use crate::support::{
     atlas_hash, estimate_tokens, is_generated_file, is_generic_name, is_test_file, map_symbol_kind,
     resolve_import_target as resolve_import, simple_name,
 };
-use crate::walker::{ProjectWalker, WalkedFile};
+use crate::walker::{ProjectWalker, WalkedFile, WalkOptions};
 use crate::lsp_client::{LspClient, LspRegistry};
 use atlas_langs::{LanguageParser, ParsedFile};
 use atlas_store::db::Store;
@@ -15,6 +15,7 @@ use atlas_store::schema::{Confidence, Edge, EdgeKind, FileMeta, Node, NodeKind};
 use anyhow::Result;
 use chrono::Utc;
 use rusqlite::{params, OptionalExtension};
+use serde_json;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -204,8 +205,27 @@ impl<'a> ProjectIndexer<'a> {
         self.drop_outdated_index()?;
         self.preload_maps()?;
 
-        let options = crate::walker::WalkOptions {
+        // Читаем настройки проекта
+        let mut custom_exclusions: Vec<String> = Vec::new();
+        let mut max_file_size: u64 = 1_048_576;
+        if let Ok(settings) = self.store.all_settings() {
+            for (key, value) in settings {
+                if key == "exclusions" {
+                    if let Ok(excl) = serde_json::from_str::<Vec<String>>(&value) {
+                        custom_exclusions = excl;
+                    }
+                } else if key == "maxFileSize" {
+                    if let Ok(size) = value.parse::<u64>() {
+                        max_file_size = size;
+                    }
+                }
+            }
+        }
+
+        let options = WalkOptions {
             root: PathBuf::from(&self.root_path),
+            max_file_size,
+            custom_exclusions,
             ..Default::default()
         };
         let files = ProjectWalker::new(options).walk()?;

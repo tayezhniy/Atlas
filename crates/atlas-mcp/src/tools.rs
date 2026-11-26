@@ -7,7 +7,7 @@ use atlas_store::{
     schema::{EdgeKind, Node, NodeKind},
 };
 use serde_json::{json, Value};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Component, Path, PathBuf};
 
 // ---------------------------------------------------------------------------
@@ -129,16 +129,29 @@ pub struct ToolContext {
     /// Абсолютный путь корня проекта.
     pub project_root: String,
     pub args: Value,
+    /// Бюджеты на инструмент (из настроек проекта).
+    pub tool_budgets: HashMap<String, usize>,
+    /// Закрытые пути (из настроек проекта).
+    pub closed_paths: Vec<String>,
 }
 
 impl ToolContext {
-    pub fn new(session_id: String, tool: Tool, max_tokens: usize, project_root: String) -> Self {
+    pub fn new(
+        session_id: String,
+        tool: Tool,
+        max_tokens: usize,
+        project_root: String,
+        tool_budgets: HashMap<String, usize>,
+        closed_paths: Vec<String>,
+    ) -> Self {
         Self {
             session_id,
             tool,
             max_tokens,
             project_root,
             args: Value::Null,
+            tool_budgets,
+            closed_paths,
         }
     }
 
@@ -642,8 +655,10 @@ impl ToolRegistry {
 }
 
 fn budget(ctx: &ToolContext, tool: &Tool) -> usize {
-    // max_tokens из аргументов вызова приоритетнее; значение из контекста — верхняя граница
-    let requested = ctx.usize_arg("max_tokens").unwrap_or_else(|| tool.default_budget());
+    // max_tokens из аргументов вызова приоритетнее; бюджет из настроек — дефолт
+    let name: &str = tool.name();
+    let default_budget = ctx.tool_budgets.get(name).copied().unwrap_or_else(|| tool.default_budget());
+    let requested = ctx.usize_arg("max_tokens").unwrap_or(default_budget);
     let cap = if ctx.max_tokens == 0 { usize::MAX } else { ctx.max_tokens };
     requested.min(cap).max(50)
 }
@@ -806,7 +821,14 @@ mod tests {
     }
 
     fn run(reg: &mut ToolRegistry, root: &str, tool: Tool, args: Value) -> Result<ToolResult> {
-        let ctx = ToolContext::new("s".into(), tool.clone(), 0, root.into()).with_args(args);
+        let ctx = ToolContext::new(
+            "s".into(),
+            tool.clone(),
+            0,
+            root.into(),
+            HashMap::new(),
+            Vec::new(),
+        ).with_args(args);
         reg.execute(&tool, &ctx)
     }
 
@@ -822,7 +844,14 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open(dir.path().join("test.db")).unwrap();
         let mut registry = ToolRegistry::new(store);
-        let ctx = ToolContext::new("test-session".to_string(), Tool::Status, 1000, "/test/project".to_string());
+        let ctx = ToolContext::new(
+            "test-session".to_string(),
+            Tool::Status,
+            1000,
+            "/test/project".to_string(),
+            HashMap::new(),
+            Vec::new(),
+        );
         let result = registry.execute(&Tool::Status, &ctx)?;
         assert!(result.text.contains("Состояние индекса"));
         Ok(())
@@ -833,7 +862,14 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open(dir.path().join("test.db")).unwrap();
         let mut registry = ToolRegistry::new(store);
-        let ctx = ToolContext::new("test-session".to_string(), Tool::Overview, 1000, "/test/project".to_string());
+        let ctx = ToolContext::new(
+            "test-session".to_string(),
+            Tool::Overview,
+            1000,
+            "/test/project".to_string(),
+            HashMap::new(),
+            Vec::new(),
+        );
         let result = registry.execute(&Tool::Overview, &ctx)?;
         assert!(result.text.contains("Карта проекта"));
         Ok(())

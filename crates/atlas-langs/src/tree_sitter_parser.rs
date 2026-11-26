@@ -1661,17 +1661,17 @@ fn extract_calls_elixir(node: &tree_sitter::Node, source: &[u8]) -> Result<Vec<C
             return;
         }
         
-        // For call nodes: skip def/defp/defmacro/defmodule/import/alias/require (outer call)
+        // For call nodes: skip def/defp/defmacro/defguard/defmodule/import/alias/require (outer call)
         if let Some(first_child) = n.child(0) {
             if first_child.kind() == "identifier" {
                 let keyword = node_text(&first_child, src).unwrap_or_default();
-                if matches!(keyword.as_str(), "import" | "alias" | "require" | "def" | "defmodule" | "defp" | "defmacro") {
+                if matches!(keyword.as_str(), "import" | "alias" | "require" | "def" | "defmodule" | "defp" | "defmacro" | "defguard") {
                     return;
                 }
             }
         }
         
-        // Also skip inner calls that are function names in def/defp/defmacro definitions
+        // Also skip inner calls that are function names in def/defp/defmacro/defguard definitions
         // These have parent = arguments, grandparent = call with def keyword
         if let Some(parent) = n.parent() {
             if parent.kind() == "arguments" {
@@ -1680,7 +1680,7 @@ fn extract_calls_elixir(node: &tree_sitter::Node, source: &[u8]) -> Result<Vec<C
                         if let Some(gp_first) = grandparent.child(0) {
                             if gp_first.kind() == "identifier" {
                                 let keyword = node_text(&gp_first, src).unwrap_or_default();
-                                if matches!(keyword.as_str(), "def" | "defp" | "defmacro" | "defmodule") {
+                                if matches!(keyword.as_str(), "def" | "defp" | "defmacro" | "defmodule" | "defguard") {
                                     return;
                                 }
                             }
@@ -1776,37 +1776,26 @@ fn extract_calls_haskell(node: &tree_sitter::Node, source: &[u8]) -> Result<Vec<
 fn extract_calls_ocaml(node: &tree_sitter::Node, source: &[u8]) -> Result<Vec<Call>> {
     let mut calls = Vec::new();
     // OCaml: calls are `application_expression` nodes
-    // An application_expression can contain multiple function calls chained together:
-    // e.g., `helper 1 2 MyModule.helper 5 6` has two value_path nodes (helper and MyModule.helper)
-    // We need to find all value_path/identifier nodes that are in function position.
+    // An application_expression is a function applied to arguments:
+    // e.g., `helper 1 y` -> function: helper, args: 1, y
+    // e.g., `List.map succ items` -> function: List.map, args: succ, items
+    // ONLY the first value_path/identifier is the function; rest are arguments.
     collect_nodes_by_type(node, source, &["application_expression"], &mut |n, src| {
-        // Iterate through children to find function calls
-        // Pattern: value_path/identifier (function) followed by arguments
-        // A function is at index 0, or after a non-value_path/identifier sibling (i.e., after arguments)
-        let mut prev_was_func = false;
+        let mut found_function = false;
         for i in 0..n.child_count() {
             if let Some(child) = n.child(i) {
                 let kind = child.kind();
-                if kind == "value_path" || kind == "identifier" {
-                    // This is a function if it's the first child, or previous was not a function
-                    // (i.e., previous was an argument like number, string, etc.)
-                    if i == 0 || !prev_was_func {
-                        let callee = extract_ocaml_call_callee_from_node(&child, src);
-                        if !callee.is_empty() {
-                            calls.push(Call {
-                                caller: "unknown".to_string(),
-                                callee,
-                                line: n.range().start_point.row + 1,
-                            });
-                        }
-                        prev_was_func = true;
-                    } else {
-                        // This value_path is likely an argument (e.g., module passed as arg)
-                        prev_was_func = false;
+                if matches!(kind, "value_path" | "identifier") && !found_function {
+                    // First value_path/identifier is the function being called
+                    let callee = extract_ocaml_call_callee_from_node(&child, src);
+                    if !callee.is_empty() {
+                        calls.push(Call {
+                            caller: "unknown".to_string(),
+                            callee,
+                            line: n.range().start_point.row + 1,
+                        });
                     }
-                } else {
-                    // Argument node (number, string, etc.)
-                    prev_was_func = false;
+                    found_function = true;
                 }
             }
         }

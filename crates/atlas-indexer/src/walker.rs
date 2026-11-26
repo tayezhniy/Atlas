@@ -10,6 +10,8 @@ pub struct WalkOptions {
     pub max_file_size: u64,
     pub respect_gitignore: bool,
     pub respect_atlasignore: bool,
+    /// Пользовательские glob-исключения из настроек.
+    pub custom_exclusions: Vec<String>,
 }
 
 impl Default for WalkOptions {
@@ -20,6 +22,7 @@ impl Default for WalkOptions {
             max_file_size: 1_048_576,
             respect_gitignore: true,
             respect_atlasignore: true,
+            custom_exclusions: Vec::new(),
         }
     }
 }
@@ -58,6 +61,10 @@ impl ProjectWalker {
         if self.options.respect_atlasignore {
             builder.add_custom_ignore_filename(".atlasignore");
         }
+        // Пользовательские исключения
+        for pattern in &self.options.custom_exclusions {
+            builder.add_ignore(pattern);
+        }
 
         for entry in builder.build() {
             let entry = entry?;
@@ -77,6 +84,10 @@ impl ProjectWalker {
             if is_always_excluded(&rel) {
                 continue;
             }
+            // Проверяем пользовательские исключения
+            if self.is_custom_excluded(&rel) {
+                continue;
+            }
             files.push(WalkedFile {
                 path: path.to_path_buf(),
                 size: metadata.len(),
@@ -86,6 +97,19 @@ impl ProjectWalker {
         }
 
         Ok(files)
+    }
+    
+    /// Проверяет, соответствует ли путь пользовательским исключениям (glob).
+    fn is_custom_excluded(&self, rel: &str) -> bool {
+        use glob::Pattern;
+        for pattern in &self.options.custom_exclusions {
+            if let Ok(p) = Pattern::new(pattern) {
+                if p.matches(rel) {
+                    return true;
+                }
+            }
+        }
+        false
     }
 }
 

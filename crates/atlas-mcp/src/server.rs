@@ -2,6 +2,7 @@ use crate::tools::{Tool, ToolContext, ToolRegistry};
 use anyhow::{bail, Result};
 use atlas_store::Store;
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use std::io::{BufRead, Write};
 
 /// Версия протокола, которую сервер называет, если клиент свою не прислал.
@@ -13,6 +14,10 @@ pub struct McpConfig {
     pub transport: Transport,
     pub token: Option<String>,
     pub budget_default: usize,
+    /// Бюджеты токенов на инструмент (из настроек проекта).
+    pub tool_budgets: HashMap<String, usize>,
+    /// Закрытые пути для секретов (из настроек проекта).
+    pub closed_paths: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -28,6 +33,8 @@ impl Default for McpConfig {
             token: None,
             // 0 = без общего потолка: у каждого инструмента свой бюджет по умолчанию
             budget_default: 0,
+            tool_budgets: HashMap::new(),
+            closed_paths: Vec::new(),
         }
     }
 }
@@ -42,8 +49,30 @@ pub struct McpServer {
 
 impl McpServer {
     pub fn new(config: McpConfig, store: Store, project_root: String) -> Self {
+        // Загружаем настройки проекта
+        let mut tool_budgets = config.tool_budgets.clone();
+        let mut closed_paths = config.closed_paths.clone();
+        
+        if let Ok(settings) = store.all_settings() {
+            for (key, value) in settings {
+                if key == "budgets" {
+                    if let Ok(budgets) = serde_json::from_str::<HashMap<String, usize>>(&value) {
+                        tool_budgets.extend(budgets);
+                    }
+                } else if key == "closedPaths" {
+                    if let Ok(paths) = serde_json::from_str::<Vec<String>>(&value) {
+                        closed_paths.extend(paths);
+                    }
+                }
+            }
+        }
+        
         Self {
-            config,
+            config: McpConfig {
+                tool_budgets,
+                closed_paths,
+                ..config
+            },
             registry: ToolRegistry::new(store),
             project_root,
             session_id: uuid::Uuid::new_v4().to_string(),
@@ -150,6 +179,8 @@ impl McpServer {
             tool.clone(),
             self.config.budget_default,
             self.project_root.clone(),
+            self.config.tool_budgets.clone(),
+            self.config.closed_paths.clone(),
         )
         .with_args(args);
 

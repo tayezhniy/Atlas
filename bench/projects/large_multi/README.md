@@ -1,7 +1,7 @@
 
 # Large Multi-Language Project
 
-Тестовый проект для бенчмарка Atlas (~{len(domains) * FILES_PER_DOMAIN} файлов).
+Тестовый проект для бенчмарка Atlas (~5250 файлов).
 
 ## Домены (75)
 

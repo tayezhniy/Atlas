@@ -8,7 +8,7 @@ interface ReportExportProps {
   initialFormat: Format
 }
 
-type Format = 'json' | 'markdown'
+type Format = 'json' | 'markdown' | 'html'
 
 /** Отчёт строит ядро (`atlas report`): интерфейс только показывает и сохраняет. */
 export default function ReportExport({ projectPath, isOpen, onClose, initialFormat }: ReportExportProps) {
@@ -49,7 +49,8 @@ export default function ReportExport({ projectPath, isOpen, onClose, initialForm
     const url = URL.createObjectURL(new Blob([content]))
     const a = document.createElement('a')
     a.href = url
-    a.download = `atlas-report-${projectPath.split(/[\\/]/).pop()}.${format === 'json' ? 'json' : 'md'}`
+    const ext = format === 'json' ? 'json' : format === 'html' ? 'html' : 'md'
+    a.download = `atlas-report-${projectPath.split(/[\\/]/).pop()}.${ext}`
     a.click()
     URL.revokeObjectURL(url)
   }
@@ -64,9 +65,9 @@ export default function ReportExport({ projectPath, isOpen, onClose, initialForm
         <div className="flex items-center justify-between p-4 border-b gap-3">
           <h2 className="text-lg font-semibold">Экспорт отчёта проекта</h2>
           <div className="flex items-center gap-2">
-            {(['markdown', 'json'] as Format[]).map((f) => (
+            {(['markdown', 'json', 'html'] as Format[]).map((f) => (
               <button key={f} onClick={() => setFormat(f)} className={`${button} ${format === f ? 'bg-primary text-primary-foreground' : ''}`}>
-                {f === 'json' ? 'JSON' : 'Markdown'}
+                {f === 'json' ? 'JSON' : f === 'html' ? 'HTML' : 'Markdown'}
               </button>
             ))}
             <button onClick={generate} disabled={generating} className={button}>

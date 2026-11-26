@@ -2,10 +2,17 @@
 """Генератор отчёта о замерах экономии токенов (раздел 14.1 ТЗ).
 
 Читает CSV с результатами сравнения и генерирует отчёт в Markdown.
+
+Методика по ТЗ:
+- Одна прогонка на задачу (run=0)
+- Экономия считается только для задач, где ОБА режима дали верный ответ
+- Итоговая экономия: медиана по задачам среднего и большого проектов
+- Целевое значение: не менее 40%
 """
 
 import csv
 import sys
+import statistics
 from pathlib import Path
 
 
@@ -19,22 +26,30 @@ def load_results(csv_path: Path) -> list[dict]:
 
 
 def compute_savings(results: list[dict]) -> dict:
-    """Вычисляет экономию токенов по задачам."""
+    """Вычисляет экономию токенов по задачам.
+    
+    Использует только первый прогон (run=0).
+    Экономия засчитывается только если ОБА режима верны.
+    """
     tasks = {}
     for r in results:
+        if int(r['run']) != 0:
+            continue  # Только первый прогон
         task = r['task_name']
+        project = r['project']
         if task not in tasks:
-            tasks[task] = {'without_atlas': [], 'with_atlas': []}
+            tasks[task] = {'project': project, 'without_atlas': None, 'with_atlas': None}
         mode = r['mode']
         tokens_out = int(r['tokens_out']) if r['tokens_out'] else 0
         calls = int(r['calls']) if r['calls'] else 0
         time_ms = int(r['time_ms']) if r['time_ms'] else 0
-        tasks[task][mode].append({
+        correct = r['correct'] == '1'
+        tasks[task][mode] = {
             'tokens_out': tokens_out,
             'calls': calls,
             'time_ms': time_ms,
-            'correct': r['correct'] == '1',
-        })
+            'correct': correct,
+        }
     return tasks
 
 
@@ -42,45 +57,78 @@ def generate_report(tasks: dict) -> str:
     lines = []
     lines.append("# Отчёт о замере экономии токенов Atlas")
     lines.append("")
-    lines.append("## Методика")
-    lines.append("- Сравнение выполнения задач с Atlas и без Atlas")
+    lines.append("## Методика (раздел 14.1 ТЗ)")
+    lines.append("- Одна прогонка на задачу (run=0)")
     lines.append("- Экономия токенов = (tokens без Atlas - tokens с Atlas) / tokens без Atlas")
+    lines.append("- Засчитывается только если ОБА режима дали верный ответ (correct=1)")
+    lines.append("- Итог: **медиана** экономии по задачам **среднего и большого** проектов")
+    lines.append("- Целевое значение: не менее 40%")
     lines.append("")
     lines.append("## Результаты по задачам")
     lines.append("")
-    lines.append("| Задача | Токены без Atlas | Токены с Atlas | Экономия | Вызовы без Atlas | Вызовы с Atlas |")
-    lines.append("|--------|------------------|----------------|----------|------------------|----------------|")
+    lines.append("| Проект | Задача | Токены без Atlas | Токены с Atlas | Экономия | Вызовы без Atlas | Вызовы с Atlas | Оба верны |")
+    lines.append("|--------|--------|------------------|----------------|----------|------------------|----------------|-----------|")
 
-    total_savings = []
-    for task, modes in tasks.items():
-        without = modes.get('without_atlas', [{}])[0]
-        with_atlas = modes.get('with_atlas', [{}])[0]
+    savings_medium = []
+    savings_large = []
+    savings_all_correct = []
 
-        tokens_without = without.get('tokens_out', 0)
-        tokens_with = with_atlas.get('tokens_out', 0)
-        calls_without = without.get('calls', 0)
-        calls_with = with_atlas.get('calls', 0)
+    for task_name, modes in tasks.items():
+        project = modes['project']
+        without = modes.get('without_atlas')
+        with_atlas = modes.get('with_atlas')
 
-        if tokens_without > 0:
+        if not without or not with_atlas:
+            continue
+
+        tokens_without = without['tokens_out']
+        tokens_with = with_atlas['tokens_out']
+        calls_without = without['calls']
+        calls_with = with_atlas['calls']
+        both_correct = without['correct'] and with_atlas['correct']
+
+        if tokens_without > 0 and both_correct:
             savings = (tokens_without - tokens_with) / tokens_without * 100
-            total_savings.append(savings)
+            savings_all_correct.append(savings)
+            if project == "medium_python":
+                savings_medium.append(savings)
+            elif project == "large_multi":
+                savings_large.append(savings)
+            savings_str = f"{savings:.1f}%"
         else:
-            savings = 0
+            savings_str = "—" if not both_correct else "0%"
 
+        correct_str = "✅" if both_correct else "❌"
         lines.append(
-            f"| {task} | {tokens_without} | {tokens_with} | {savings:.1f}% | "
-            f"{calls_without} | {calls_with} |"
+            f"| {project} | {task_name} | {tokens_without} | {tokens_with} | {savings_str} | "
+            f"{calls_without} | {calls_with} | {correct_str} |"
         )
 
     lines.append("")
-    if total_savings:
-        avg_savings = sum(total_savings) / len(total_savings)
-        lines.append(f"## Итоговая экономия токенов: {avg_savings:.1f}% (среднее по задачам)")
-        lines.append(f"Целевое значение (раздел 1.2): не менее 40%")
-        if avg_savings >= 40:
-            lines.append("✅ Цель достигнута")
+    lines.append("## Итоговые значения экономии")
+    lines.append("")
+
+    if savings_medium:
+        med_medium = statistics.median(savings_medium)
+        lines.append(f"- **Средний проект (median)**: {med_medium:.1f}% по {len(savings_medium)} задачам")
+    if savings_large:
+        med_large = statistics.median(savings_large)
+        lines.append(f"- **Большой проект (median)**: {med_large:.1f}% по {len(savings_large)} задачам")
+
+    # Итог по ТЗ: медиана по среднему И большому проектам
+    combined = savings_medium + savings_large
+    if combined:
+        final_median = statistics.median(combined)
+        lines.append(f"- **Итог (median по medium+large)**: **{final_median:.1f}%**")
+        lines.append(f"- Целевое значение (раздел 1.2): не менее 40%")
+        if final_median >= 40:
+            lines.append("✅ **Гейт пройден**")
         else:
-            lines.append("❌ Цель не достигнута — требуется оптимизация")
+            lines.append("❌ **Гейт не пройден** — требуется оптимизация")
+
+    if savings_all_correct:
+        lines.append("")
+        lines.append(f"*Справка: среднее по всем верным задачам: {statistics.mean(savings_all_correct):.1f}% ({len(savings_all_correct)} задач)*")
 
     return "\n".join(lines)
 

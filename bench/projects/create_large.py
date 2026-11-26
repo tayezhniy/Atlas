@@ -349,11 +349,12 @@ with open(os.path.join(root, "package.json"), "w") as f:
 """)
 
 # README
+total_files = len(domains) * FILES_PER_DOMAIN
 with open(os.path.join(root, "README.md"), "w") as f:
     f.write(f"""
 # Large Multi-Language Project
 
-Тестовый проект для бенчмарка Atlas (~{{len(domains) * FILES_PER_DOMAIN}} файлов).
+Тестовый проект для бенчмарка Atlas (~{total_files} файлов).
 
 ## Домены ({len(domains)})
 

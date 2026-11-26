@@ -5,6 +5,8 @@ use atlas_indexer::{FileWatcher, IncrementalUpdater, ProjectIndexer, WatchEvent}
 use atlas_mcp::{McpConfig, McpServer, Transport};
 use atlas_store::Store;
 use clap::{Parser, Subcommand};
+use serde_json::{Value, from_str, to_string_pretty, Map};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 #[derive(Parser)]
@@ -132,7 +134,30 @@ fn main() -> Result<()> {
                 tracing::info!("индекса ещё нет, индексирую {}", root.display());
                 ProjectIndexer::new(&mut store, &root.to_string_lossy()).index_project()?;
             }
-            let config = McpConfig { transport, ..McpConfig::default() };
+            
+            // Читаем настройки проекта
+            let mut tool_budgets: HashMap<String, usize> = HashMap::new();
+            let mut closed_paths: Vec<String> = Vec::new();
+            if let Ok(settings) = store.all_settings() {
+                for (key, value) in settings {
+                    if key == "budgets" {
+                        if let Ok(budgets) = from_str::<HashMap<String, usize>>(&value) {
+                            tool_budgets.extend(budgets);
+                        }
+                    } else if key == "closedPaths" {
+                        if let Ok(paths) = from_str::<Vec<String>>(&value) {
+                            closed_paths.extend(paths);
+                        }
+                    }
+                }
+            }
+            
+            let config = McpConfig {
+                transport,
+                tool_budgets,
+                closed_paths,
+                ..McpConfig::default()
+            };
             McpServer::new(config, store, root.to_string_lossy().to_string()).run()?;
         }
         Commands::Run { command } => {
@@ -158,7 +183,7 @@ fn main() -> Result<()> {
                 println!("{}", store.get_setting(&key)?.unwrap_or_else(|| "null".into()));
             }
             SettingsCommand::Set { key, value, project } => {
-                serde_json::from_str::<serde_json::Value>(&value)
+                from_str::<Value>(&value)
                     .with_context(|| format!("значение должно быть JSON, получено: {value}"))?;
                 let store = open_store(&project_root(project.as_deref())?)?;
                 store.set_setting(&key, &value)?;
@@ -166,11 +191,11 @@ fn main() -> Result<()> {
             }
             SettingsCommand::All { project } => {
                 let store = open_store(&project_root(project.as_deref())?)?;
-                let settings: serde_json::Map<String, serde_json::Value> = store
+                let settings: Map<String, Value> = store
                     .all_settings()?
                     .into_iter()
                     .map(|(k, v)| {
-                        let value = serde_json::from_str(&v).unwrap_or(serde_json::Value::String(v));
+                        let value = from_str(&v).unwrap_or(Value::String(v));
                         (k, value)
                     })
                     .collect();
@@ -186,7 +211,7 @@ fn main() -> Result<()> {
                     let options = ReportOptions { project_root: root.to_string(), ..Default::default() };
                     println!("{}", ReportGenerator::new(options).generate(&store)?);
                 }
-                "json" => println!("{}", serde_json::to_string_pretty(&report_json(&store, &root)?)?),
+                "json" => println!("{}", to_string_pretty(&report_json(&store, &root)?)?),
                 "html" => println!("{}", report_html(&store, &root)?),
                 other => bail!("неизвестный формат «{other}»: json, markdown или html"),
             }
