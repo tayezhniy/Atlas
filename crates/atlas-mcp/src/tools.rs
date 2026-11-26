@@ -9,6 +9,7 @@ use atlas_store::{
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Component, Path, PathBuf};
+use std::sync::Arc;
 
 // ---------------------------------------------------------------------------
 // Инструменты MCP (раздел 8.2 ТЗ): overview, search, outline, read, neighbors, context_for, status
@@ -184,13 +185,13 @@ pub struct ToolResult {
 
 /// Реестр инструментов: читает индекс и файлы проекта, ничего не меняет (раздел 8.5 ТЗ).
 pub struct ToolRegistry {
-    pub(crate) store: Store,
+    pub(crate) store: Arc<Store>,
 }
 
 type Body = (String, Vec<String>);
 
 impl ToolRegistry {
-    pub fn new(store: Store) -> Self {
+    pub fn new(store: Arc<Store>) -> Self {
         Self { store }
     }
 
@@ -199,7 +200,7 @@ impl ToolRegistry {
     }
 
     /// Выполняет инструмент, добавляет заголовок, пишет вызов в журнал.
-    pub fn execute(&mut self, tool: &Tool, ctx: &ToolContext) -> Result<ToolResult> {
+    pub fn execute(&self, tool: &Tool, ctx: &ToolContext) -> Result<ToolResult> {
         // настройки могли измениться, пока сервер работает
         self.store.load_closed_paths()?;
         let (body, node_ids) = match tool {
@@ -980,10 +981,10 @@ mod tests {
         };
         store.upsert_edge(&call(&main, &helper)).unwrap();
         store.upsert_edge(&call(&t, &main)).unwrap();
-        (dir, ToolRegistry::new(store), root)
+        (dir, ToolRegistry::new(Arc::new(store)), root)
     }
 
-    fn run(reg: &mut ToolRegistry, root: &str, tool: Tool, args: Value) -> Result<ToolResult> {
+    fn run(reg: &ToolRegistry, root: &str, tool: Tool, args: Value) -> Result<ToolResult> {
         let ctx = ToolContext::new("s".into(), tool.clone(), 0, root.into(), HashMap::new())
             .with_args(args);
         reg.execute(&tool, &ctx)
@@ -993,14 +994,14 @@ mod tests {
     fn test_list_tools() {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open(dir.path().join("test.db")).unwrap();
-        assert_eq!(ToolRegistry::new(store).list_tools().len(), 7);
+        assert_eq!(ToolRegistry::new(Arc::new(store)).list_tools().len(), 7);
     }
 
     #[test]
     fn test_status_tool() -> Result<()> {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open(dir.path().join("test.db")).unwrap();
-        let mut registry = ToolRegistry::new(store);
+        let registry = ToolRegistry::new(Arc::new(store));
         let ctx = ToolContext::new(
             "test-session".to_string(),
             Tool::Status,
@@ -1017,7 +1018,7 @@ mod tests {
     fn test_overview_tool() -> Result<()> {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open(dir.path().join("test.db")).unwrap();
-        let mut registry = ToolRegistry::new(store);
+        let registry = ToolRegistry::new(Arc::new(store));
         let ctx = ToolContext::new(
             "test-session".to_string(),
             Tool::Overview,
@@ -1032,8 +1033,8 @@ mod tests {
 
     #[test]
     fn search_finds_symbol_by_prefix() -> Result<()> {
-        let (_d, mut reg, root) = fixture();
-        let r = run(&mut reg, &root, Tool::Search, json!({"query": "help"}))?;
+        let (_d, reg, root) = fixture();
+        let r = run(&reg, &root, Tool::Search, json!({"query": "help"}))?;
         assert!(
             r.text.contains("a.py:1\tfunction\tdef helper()"),
             "{}",
@@ -1044,11 +1045,11 @@ mod tests {
 
     #[test]
     fn read_symbol_modes() -> Result<()> {
-        let (_d, mut reg, root) = fixture();
-        let full = run(&mut reg, &root, Tool::Read, json!({"symbol": "main"}))?.text;
+        let (_d, reg, root) = fixture();
+        let full = run(&reg, &root, Tool::Read, json!({"symbol": "main"}))?.text;
         assert!(full.contains("4\tdef main():") && full.contains("7\t        deep()"));
         let folded = run(
-            &mut reg,
+            &reg,
             &root,
             Tool::Read,
             json!({"symbol": "main", "mode": "folded"}),
@@ -1059,7 +1060,7 @@ mod tests {
             "{folded}"
         );
         let sig = run(
-            &mut reg,
+            &reg,
             &root,
             Tool::Read,
             json!({"symbol": "main", "mode": "signature"}),
@@ -1071,22 +1072,22 @@ mod tests {
 
     #[test]
     fn read_rejects_path_outside_project() {
-        let (_d, mut reg, root) = fixture();
+        let (_d, reg, root) = fixture();
         let err = run(
-            &mut reg,
+            &reg,
             &root,
             Tool::Read,
             json!({"path": "../../../etc/passwd"}),
         )
         .unwrap_err();
         assert!(!err.to_string().is_empty());
-        let abs = run(&mut reg, &root, Tool::Read, json!({"path": "/etc/passwd"}));
+        let abs = run(&reg, &root, Tool::Read, json!({"path": "/etc/passwd"}));
         assert!(abs.is_err(), "абсолютный путь не должен выходить за проект");
     }
 
     #[test]
     fn secrets_are_masked_in_every_tool() -> Result<()> {
-        let (dir, mut reg, root) = fixture();
+        let (dir, reg, root) = fixture();
         std::fs::write(
             dir.path().join("s.js"),
             "  const password = \"SuperSecret123\"; run(() => 1);\n",
@@ -1110,10 +1111,10 @@ mod tests {
             (Tool::Search, json!({"query": "password"})),
             (Tool::ContextFor, json!({"symbol": "password"})),
         ] {
-            let text = run(&mut reg, &root, tool.clone(), args)?.text;
+            let text = run(&reg, &root, tool.clone(), args)?.text;
             assert!(!text.contains("SuperSecret123"), "{tool}: {text}");
         }
-        let read = run(&mut reg, &root, Tool::Read, json!({"path": "s.js"}))?.text;
+        let read = run(&reg, &root, Tool::Read, json!({"path": "s.js"}))?.text;
         assert!(
             read.contains("1\t  const password = \"***\"; run"),
             "{read}"
@@ -1124,18 +1125,18 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn symlink_to_secret_is_closed() -> Result<()> {
-        let (dir, mut reg, root) = fixture();
+        let (dir, reg, root) = fixture();
         std::fs::write(dir.path().join(".env"), "A=1\n")?;
         std::os::unix::fs::symlink(dir.path().join(".env"), dir.path().join("link.txt"))?;
-        assert!(run(&mut reg, &root, Tool::Read, json!({"path": "link.txt"})).is_err());
+        assert!(run(&reg, &root, Tool::Read, json!({"path": "link.txt"})).is_err());
         Ok(())
     }
 
     #[test]
     fn read_respects_budget() -> Result<()> {
-        let (_d, mut reg, root) = fixture();
+        let (_d, reg, root) = fixture();
         let r = run(
-            &mut reg,
+            &reg,
             &root,
             Tool::Read,
             json!({"path": "a.py", "max_tokens": 50}),
@@ -1146,13 +1147,13 @@ mod tests {
 
     #[test]
     fn neighbors_and_context_for() -> Result<()> {
-        let (_d, mut reg, root) = fixture();
-        let n = run(&mut reg, &root, Tool::Neighbors, json!({"symbol": "main"}))?.text;
+        let (_d, reg, root) = fixture();
+        let n = run(&reg, &root, Tool::Neighbors, json!({"symbol": "main"}))?.text;
         assert!(
             n.contains("calls → helper") && n.contains("calls ← test_main"),
             "{n}"
         );
-        let c = run(&mut reg, &root, Tool::ContextFor, json!({"symbol": "main"}))?.text;
+        let c = run(&reg, &root, Tool::ContextFor, json!({"symbol": "main"}))?.text;
         assert!(
             c.contains("вызывает:") && c.contains("тесты:") && c.contains("def main()"),
             "{c}"
@@ -1162,8 +1163,8 @@ mod tests {
 
     #[test]
     fn unknown_symbol_suggests_similar() {
-        let (_d, mut reg, root) = fixture();
-        let err = run(&mut reg, &root, Tool::Read, json!({"symbol": "helpe"}))
+        let (_d, reg, root) = fixture();
+        let err = run(&reg, &root, Tool::Read, json!({"symbol": "helpe"}))
             .unwrap_err()
             .to_string();
         assert!(err.contains("не найден"));
@@ -1171,8 +1172,8 @@ mod tests {
 
     #[test]
     fn calls_are_logged() -> Result<()> {
-        let (_d, mut reg, root) = fixture();
-        run(&mut reg, &root, Tool::Status, json!({}))?;
+        let (_d, reg, root) = fixture();
+        run(&reg, &root, Tool::Status, json!({}))?;
         let n: i64 = reg.store.conn().query_row(
             "SELECT COUNT(*) FROM call_log WHERE tool = 'status'",
             [],

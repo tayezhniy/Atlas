@@ -209,6 +209,7 @@ dependencies = [
  "anyhow",
  "chrono",
  "ignore",
+ "parking_lot",
  "rusqlite",
  "serde",
  "serde_json",

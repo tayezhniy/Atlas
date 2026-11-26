@@ -4,6 +4,8 @@ use atlas_store::Store;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::io::{BufRead, Write};
+use std::path::Path;
+use std::sync::{Arc, RwLock};
 
 /// Версия протокола, которую сервер называет, если клиент свою не прислал.
 const DEFAULT_PROTOCOL: &str = "2024-11-05";
@@ -37,16 +39,18 @@ impl Default for McpConfig {
 }
 
 /// MCP-сервер Atlas (раздел 8 ТЗ): JSON-RPC 2.0, по одному сообщению в строке.
+/// Поддерживает динамическое переключение проектов через аргумент `project_path` в вызовах инструментов.
 pub struct McpServer {
     config: McpConfig,
-    registry: ToolRegistry,
-    project_root: String,
+    /// Карта: project_root -> (Store, tool_budgets). Arc<RwLock> для совместного доступа.
+    stores: Arc<RwLock<HashMap<String, (Arc<Store>, HashMap<String, usize>)>>>,
+    default_project_root: String,
     session_id: String,
 }
 
 impl McpServer {
     pub fn new(config: McpConfig, store: Store, project_root: String) -> Self {
-        // Загружаем настройки проекта
+        // Загружаем настройки проекта по умолчанию
         let mut tool_budgets = config.tool_budgets.clone();
 
         if let Ok(settings) = store.all_settings() {
@@ -59,13 +63,13 @@ impl McpServer {
             }
         }
 
+        let mut stores = HashMap::new();
+        stores.insert(project_root.clone(), (Arc::new(store), tool_budgets));
+
         Self {
-            config: McpConfig {
-                tool_budgets,
-                ..config
-            },
-            registry: ToolRegistry::new(store),
-            project_root,
+            config,
+            stores: Arc::new(RwLock::new(stores)),
+            default_project_root: project_root,
             session_id: uuid::Uuid::new_v4().to_string(),
         }
     }
@@ -80,7 +84,7 @@ impl McpServer {
     }
 
     fn run_stdio(mut self) -> Result<()> {
-        tracing::info!("MCP-сервер запущен (stdio), проект: {}", self.project_root);
+        tracing::info!("MCP-сервер запущен (stdio), проект по умолчанию: {}", self.default_project_root);
         let stdin = std::io::stdin();
         let mut stdout = std::io::stdout().lock();
         for line in stdin.lock().lines() {
@@ -95,6 +99,53 @@ impl McpServer {
         }
         tracing::info!("stdin закрыт, сервер остановлен");
         Ok(())
+    }
+
+    /// Получает или создаёт Store для указанного проекта
+    fn get_or_create_store(&self, project_root: &str) -> Result<(Arc<Store>, HashMap<String, usize>)> {
+        // Сначала пробуем получить с read lock
+        {
+            let stores = self.stores.read().unwrap();
+            if let Some((store, budgets)) = stores.get(project_root) {
+                return Ok((store.clone(), budgets.clone()));
+            }
+        }
+
+        // Нужен write lock для создания нового
+        let mut stores = self.stores.write().unwrap();
+
+        // Double-check после получения write lock
+        if let Some((store, budgets)) = stores.get(project_root) {
+            return Ok((store.clone(), budgets.clone()));
+        }
+
+        // Открываем новый store для проекта
+        let root_path = Path::new(project_root);
+        if !root_path.exists() {
+            bail!("Проект не найден: {}", project_root);
+        }
+
+        let db_path = root_path.join(".atlas").join("index.db");
+        if !db_path.exists() {
+            bail!("Индекс не найден для проекта: {}. Сначала выполните `atlas index {}`", project_root, project_root);
+        }
+
+        let store = Arc::new(Store::open(&db_path)?);
+
+        // Загружаем настройки проекта
+        let mut tool_budgets = self.config.tool_budgets.clone();
+        if let Ok(settings) = store.all_settings() {
+            for (key, value) in settings {
+                if key == "budgets" {
+                    if let Ok(budgets) = serde_json::from_str::<HashMap<String, usize>>(&value) {
+                        tool_budgets.extend(budgets);
+                    }
+                }
+            }
+        }
+
+        stores.insert(project_root.to_string(), (store.clone(), tool_budgets.clone()));
+        Ok((store, tool_budgets))
     }
 
     /// Обрабатывает одно входящее сообщение. Для уведомлений ответа нет.
@@ -133,8 +184,13 @@ impl McpServer {
             }
             "ping" => ok_reply(id, json!({})),
             "tools/list" => {
-                let tools: Vec<Value> = self
-                    .registry
+                // tools/list не зависит от проекта, используем store проекта по умолчанию
+                let (store, _) = match self.get_or_create_store(&self.default_project_root) {
+                    Ok(v) => v,
+                    Err(e) => return Some(error_reply(id, -32000, &e.to_string()).to_string()),
+                };
+                let registry = ToolRegistry::new(store);
+                let tools: Vec<Value> = registry
                     .list_tools()
                     .iter()
                     .map(|t| {
@@ -152,8 +208,18 @@ impl McpServer {
             "atlas/ui" => {
                 let method = params.get("method").and_then(Value::as_str).unwrap_or("");
                 let args = params.get("args").cloned().unwrap_or_else(|| json!({}));
-                match self.registry.ui(&self.project_root, method, &args) {
-                    Ok(result) => ok_reply(id, result),
+                // Поддержка project_path в atlas/ui
+                let project_root = args.get("project_path")
+                    .and_then(Value::as_str)
+                    .unwrap_or(&self.default_project_root);
+                match self.get_or_create_store(project_root) {
+                    Ok((store, _)) => {
+                        let registry = ToolRegistry::new(store);
+                        match registry.ui(project_root, method, &args) {
+                            Ok(result) => ok_reply(id, result),
+                            Err(e) => error_reply(id, -32000, &e.to_string()),
+                        }
+                    }
                     Err(e) => error_reply(id, -32000, &e.to_string()),
                 }
             }
@@ -171,17 +237,34 @@ impl McpServer {
             .get("arguments")
             .cloned()
             .unwrap_or_else(|| json!({}));
+
+        // Проверяем project_path в аргументах инструмента
+        let project_root = args.get("project_path")
+            .and_then(Value::as_str)
+            .unwrap_or(&self.default_project_root);
+
+        let (store, tool_budgets) = match self.get_or_create_store(project_root) {
+            Ok(v) => v,
+            Err(e) => {
+                return ok_reply(
+                    id,
+                    json!({"content": [{"type": "text", "text": e.to_string()}], "isError": true}),
+                );
+            }
+        };
+
         let ctx = ToolContext::new(
             self.session_id.clone(),
             tool.clone(),
             self.config.budget_default,
-            self.project_root.clone(),
-            self.config.tool_budgets.clone(),
+            project_root.to_string(),
+            tool_budgets,
         )
         .with_args(args);
 
         // Ошибки инструмента — не ошибки протокола: модель должна их увидеть и поправить вызов
-        match self.registry.execute(&tool, &ctx) {
+        let mut registry = ToolRegistry::new(store.clone());
+        match registry.execute(&tool, &ctx) {
             Ok(result) => ok_reply(
                 id,
                 json!({"content": [{"type": "text", "text": result.text}], "isError": false}),
@@ -320,7 +403,7 @@ mod tests {
         store
             .set_setting("closedPaths", r#"["private/**"]"#)
             .unwrap();
-        let mut registry = ToolRegistry::new(store);
+        let registry = ToolRegistry::new(Arc::new(store));
 
         let args = [
             (Tool::Read, json!({"path": "private/p.rs"})),
@@ -358,7 +441,7 @@ mod tests {
     fn ui_map_is_not_logged_as_ai_call() {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open(dir.path().join("test.db")).unwrap();
-        let registry = ToolRegistry::new(store);
+        let registry = ToolRegistry::new(Arc::new(store));
         let map = registry.ui("/test/project", "map", &json!({})).unwrap();
         assert!(map["text"].as_str().unwrap().contains("Карта проекта"));
         let status = registry.ui("/test/project", "status", &json!({})).unwrap();

@@ -3,14 +3,14 @@ use crate::error::{Result, StoreError};
 use crate::schema::{Edge, EdgeKind, FileMeta, Node, NodeKind};
 use ignore::gitignore::Gitignore;
 use rusqlite::{params, Connection};
-use std::cell::RefCell;
+use parking_lot::RwLock;
 use std::path::Path;
 
 /// Обёртка над соединением с базой данных индекса.
 pub struct Store {
     conn: Connection,
     /// Закрытые пути из настроек; пока не загружены, узлы отдаются как есть.
-    closed: RefCell<Gitignore>,
+    closed: RwLock<Gitignore>,
 }
 
 /// Алиас для удобства работы с транзакциями.
@@ -30,7 +30,7 @@ impl Store {
         Self::run_migrations(&conn)?;
         Ok(Self {
             conn,
-            closed: RefCell::new(Gitignore::empty()),
+            closed: RwLock::new(Gitignore::empty()),
         })
     }
 
@@ -43,17 +43,17 @@ impl Store {
             })?,
             None => Vec::new(),
         };
-        *self.closed.borrow_mut() = closed::build(&patterns);
+        *self.closed.write() = closed::build(&patterns);
         Ok(())
     }
 
     /// Закрыт ли путь (относительно корня проекта) настройками пользователя.
     pub fn is_user_closed(&self, path: &str) -> bool {
-        closed::matches(&self.closed.borrow(), path)
+        closed::matches(&self.closed.read(), path)
     }
 
     fn redacted<T: Redact>(&self, mut value: T) -> T {
-        value.redact(&self.closed.borrow());
+        value.redact(&self.closed.read());
         value
     }
 

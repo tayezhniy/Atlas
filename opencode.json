@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "atlas": {
+      "command": "./target/release/atlas-cli",
+      "args": [
+        "mcp",
+        "--project",
+        "/home/maismaun/AI-Chef"
+      ]
+    }
+  }
+}
