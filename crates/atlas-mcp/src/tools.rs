@@ -133,8 +133,6 @@ pub struct ToolContext {
     pub args: Value,
     /// Бюджеты на инструмент (из настроек проекта).
     pub tool_budgets: HashMap<String, usize>,
-    /// Закрытые пути (из настроек проекта).
-    pub closed_paths: Vec<String>,
 }
 
 impl ToolContext {
@@ -144,7 +142,6 @@ impl ToolContext {
         max_tokens: usize,
         project_root: String,
         tool_budgets: HashMap<String, usize>,
-        closed_paths: Vec<String>,
     ) -> Self {
         Self {
             session_id,
@@ -153,7 +150,6 @@ impl ToolContext {
             project_root,
             args: Value::Null,
             tool_budgets,
-            closed_paths,
         }
     }
 
@@ -204,6 +200,8 @@ impl ToolRegistry {
 
     /// Выполняет инструмент, добавляет заголовок, пишет вызов в журнал.
     pub fn execute(&mut self, tool: &Tool, ctx: &ToolContext) -> Result<ToolResult> {
+        // настройки могли измениться, пока сервер работает
+        self.store.load_closed_paths()?;
         let (body, node_ids) = match tool {
             Tool::Overview => self.overview(ctx)?,
             Tool::Search => self.search(ctx)?,
@@ -250,13 +248,13 @@ impl ToolRegistry {
 
     /// Тело ответа `overview` с маскированием, без записи в журнал (для интерфейса).
     pub(crate) fn overview_text(&self, project_root: &str) -> Result<String> {
+        self.store.load_closed_paths()?;
         let ctx = ToolContext::new(
             "ui".into(),
             Tool::Overview,
             0,
             project_root.into(),
             HashMap::new(),
-            Vec::new(),
         );
         Ok(mask_text(&self.overview(&ctx)?.0))
     }
@@ -496,7 +494,7 @@ impl ToolRegistry {
             end = e.max(start);
         }
 
-        let file_lines = read_project_lines(&ctx.project_root, &path)?;
+        let file_lines = read_project_lines(&self.store, &ctx.project_root, &path)?;
         let total = file_lines.len();
         if start > total {
             bail!("в файле {path} всего {total} строк, а start_line = {start}");
@@ -637,18 +635,23 @@ impl ToolRegistry {
             }
         }
 
-        let file_lines = read_project_lines(&ctx.project_root, &node.path)?;
-        let start = node.line_start.unwrap_or(1).max(1) as usize;
-        let end = (node.line_end.unwrap_or(start as i32).max(start as i32) as usize)
-            .min(file_lines.len());
-        if start <= end {
-            let slice: Vec<(usize, &str)> = (start..=end)
-                .map(|n| (n, file_lines[n - 1].as_str()))
-                .collect();
-            // Тело символа в свёрнутом виде; если и так не влезает, обрезка ниже
-            let folded = fold_by_indent(slice);
-            lines.push(format!("{PROJECT_DATA_NOTE} {}:{start}-{end}", node.path));
-            lines.extend(folded.iter().map(|(n, l)| format!("{n}\t{l}")));
+        // закрытый файл не должен ронять весь ответ: связи и тесты уже собраны
+        match read_project_lines(&self.store, &ctx.project_root, &node.path) {
+            Ok(file_lines) => {
+                let start = node.line_start.unwrap_or(1).max(1) as usize;
+                let end = (node.line_end.unwrap_or(start as i32).max(start as i32) as usize)
+                    .min(file_lines.len());
+                if start <= end {
+                    let slice: Vec<(usize, &str)> = (start..=end)
+                        .map(|n| (n, file_lines[n - 1].as_str()))
+                        .collect();
+                    // Тело символа в свёрнутом виде; если и так не влезает, обрезка ниже
+                    let folded = fold_by_indent(slice);
+                    lines.push(format!("{PROJECT_DATA_NOTE} {}:{start}-{end}", node.path));
+                    lines.extend(folded.iter().map(|(n, l)| format!("{n}\t{l}")));
+                }
+            }
+            Err(e) => lines.push(e.to_string()),
         }
 
         let (text, shown) = truncate_to_budget(&lines, budget(ctx, &Tool::ContextFor));
@@ -830,7 +833,10 @@ pub(crate) fn normalize_rel(path: &str) -> String {
 /// Читает файл проекта построчно. Путь обязан остаться внутри корня проекта (раздел 10.1 ТЗ).
 /// Закрытые пути (секреты, .env, ключи, .git, .atlas) не отдаются, а значения,
 /// похожие на токены/ключи, маскируются (раздел 10.1, п.5 ТЗ).
-pub(crate) fn read_project_lines(root: &str, rel_path: &str) -> Result<Vec<String>> {
+pub(crate) fn read_project_lines(store: &Store, root: &str, rel_path: &str) -> Result<Vec<String>> {
+    if store.is_user_closed(rel_path) {
+        bail!("путь «{rel_path}» закрыт настройками проекта (closedPaths)");
+    }
     if is_closed_path(rel_path) {
         bail!("путь «{rel_path}» закрыт для чтения через MCP (секрет или служебный каталог)");
     }
@@ -844,6 +850,9 @@ pub(crate) fn read_project_lines(root: &str, rel_path: &str) -> Result<Vec<Strin
     }
     // Ссылка внутри проекта может вести на закрытый файл
     let target = canonical.strip_prefix(&root)?.to_string_lossy().to_string();
+    if store.is_user_closed(&target) {
+        bail!("путь «{rel_path}» закрыт настройками проекта (closedPaths, ссылка)");
+    }
     if is_closed_path(&target) {
         bail!("путь «{rel_path}» закрыт для чтения через MCP (ссылка на секрет)");
     }
@@ -975,15 +984,8 @@ mod tests {
     }
 
     fn run(reg: &mut ToolRegistry, root: &str, tool: Tool, args: Value) -> Result<ToolResult> {
-        let ctx = ToolContext::new(
-            "s".into(),
-            tool.clone(),
-            0,
-            root.into(),
-            HashMap::new(),
-            Vec::new(),
-        )
-        .with_args(args);
+        let ctx = ToolContext::new("s".into(), tool.clone(), 0, root.into(), HashMap::new())
+            .with_args(args);
         reg.execute(&tool, &ctx)
     }
 
@@ -1005,7 +1007,6 @@ mod tests {
             1000,
             "/test/project".to_string(),
             HashMap::new(),
-            Vec::new(),
         );
         let result = registry.execute(&Tool::Status, &ctx)?;
         assert!(result.text.contains("Состояние индекса"));
@@ -1023,7 +1024,6 @@ mod tests {
             1000,
             "/test/project".to_string(),
             HashMap::new(),
-            Vec::new(),
         );
         let result = registry.execute(&Tool::Overview, &ctx)?;
         assert!(result.text.contains("Карта проекта"));

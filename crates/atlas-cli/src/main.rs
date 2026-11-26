@@ -139,16 +139,11 @@ fn main() -> Result<()> {
 
             // Читаем настройки проекта
             let mut tool_budgets: HashMap<String, usize> = HashMap::new();
-            let mut closed_paths: Vec<String> = Vec::new();
             if let Ok(settings) = store.all_settings() {
                 for (key, value) in settings {
                     if key == "budgets" {
                         if let Ok(budgets) = from_str::<HashMap<String, usize>>(&value) {
                             tool_budgets.extend(budgets);
-                        }
-                    } else if key == "closedPaths" {
-                        if let Ok(paths) = from_str::<Vec<String>>(&value) {
-                            closed_paths.extend(paths);
                         }
                     }
                 }
@@ -157,7 +152,6 @@ fn main() -> Result<()> {
             let config = McpConfig {
                 transport,
                 tool_budgets,
-                closed_paths,
                 ..McpConfig::default()
             };
             McpServer::new(config, store, root.to_string_lossy().to_string()).run()?;

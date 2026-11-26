@@ -1,11 +1,16 @@
+use crate::closed::{self, Redact};
 use crate::error::{Result, StoreError};
 use crate::schema::{Edge, EdgeKind, FileMeta, Node, NodeKind};
+use ignore::gitignore::Gitignore;
 use rusqlite::{params, Connection};
+use std::cell::RefCell;
 use std::path::Path;
 
 /// Обёртка над соединением с базой данных индекса.
 pub struct Store {
     conn: Connection,
+    /// Закрытые пути из настроек; пока не загружены, узлы отдаются как есть.
+    closed: RefCell<Gitignore>,
 }
 
 /// Алиас для удобства работы с транзакциями.
@@ -23,7 +28,99 @@ impl Store {
         conn.pragma_update(None, "recursive_triggers", "ON")?;
 
         Self::run_migrations(&conn)?;
-        Ok(Self { conn })
+        Ok(Self {
+            conn,
+            closed: RefCell::new(Gitignore::empty()),
+        })
+    }
+
+    /// Читает `closedPaths` из настроек. Вызывается перед каждым запросом чтения
+    /// (MCP, интерфейс, отчёт). Индексатор не вызывает, чтобы не стирать сигнатуры в базе.
+    pub fn load_closed_paths(&self) -> Result<()> {
+        let patterns: Vec<String> = match self.get_setting("closedPaths")? {
+            Some(json) => serde_json::from_str(&json).map_err(|e| {
+                StoreError::Sql(rusqlite::Error::ToSqlConversionFailure(Box::new(e)))
+            })?,
+            None => Vec::new(),
+        };
+        *self.closed.borrow_mut() = closed::build(&patterns);
+        Ok(())
+    }
+
+    /// Закрыт ли путь (относительно корня проекта) настройками пользователя.
+    pub fn is_user_closed(&self, path: &str) -> bool {
+        closed::matches(&self.closed.borrow(), path)
+    }
+
+    fn redacted<T: Redact>(&self, mut value: T) -> T {
+        value.redact(&self.closed.borrow());
+        value
+    }
+
+    /// Находит узел по ID.
+    pub fn get_node(&self, id: &uuid::Uuid) -> Result<Option<Node>> {
+        Ok(self.redacted(self.get_node_raw(id)?))
+    }
+
+    /// Находит узел по точному пути.
+    pub fn find_node_by_path(&self, path: &str) -> Result<Option<Node>> {
+        Ok(self.redacted(self.find_node_by_path_raw(path)?))
+    }
+
+    /// Находит узлы по пути (префиксный поиск).
+    pub fn find_nodes_by_path_prefix(&self, path_prefix: &str) -> Result<Vec<Node>> {
+        Ok(self.redacted(self.find_nodes_by_path_prefix_raw(path_prefix)?))
+    }
+
+    /// Находит узел файла (kind = 'file') по пути. У символов путь совпадает с путём файла.
+    pub fn find_file_node_by_path(&self, path: &str) -> Result<Option<Node>> {
+        Ok(self.redacted(self.find_file_node_by_path_raw(path)?))
+    }
+
+    /// Все узлы индекса, по убыванию ранга.
+    pub fn get_all_nodes(&self) -> Result<Vec<Node>> {
+        Ok(self.redacted(self.get_all_nodes_raw()?))
+    }
+
+    /// Все узлы заданных видов, по убыванию ранга.
+    pub fn nodes_of_kinds(&self, kinds: &[NodeKind]) -> Result<Vec<Node>> {
+        Ok(self.redacted(self.nodes_of_kinds_raw(kinds)?))
+    }
+
+    /// Все узлы-файлы индекса.
+    pub fn file_nodes(&self) -> Result<Vec<Node>> {
+        Ok(self.redacted(self.file_nodes_raw()?))
+    }
+
+    /// Все узлы-символы (всё, кроме каталогов и файлов).
+    pub fn symbol_nodes(&self) -> Result<Vec<Node>> {
+        Ok(self.redacted(self.symbol_nodes_raw()?))
+    }
+
+    /// Все узлы одного файла (сам файл и символы), по порядку строк.
+    pub fn nodes_in_file(&self, path: &str) -> Result<Vec<Node>> {
+        Ok(self.redacted(self.nodes_in_file_raw(path)?))
+    }
+
+    /// Символы с точным именем (без файлов и каталогов), по убыванию ранга.
+    pub fn symbols_by_name(&self, name: &str) -> Result<Vec<Node>> {
+        Ok(self.redacted(self.symbols_by_name_raw(name)?))
+    }
+
+    /// Полнотекстовый поиск по имени, сигнатуре, докстрингу и пути.
+    /// Запрос превращается в безопасное префиксное выражение FTS5.
+    pub fn search_nodes(&self, query: &str, limit: usize) -> Result<Vec<Node>> {
+        Ok(self.redacted(self.search_nodes_raw(query, limit)?))
+    }
+
+    /// Находит узел каталога по точному пути (не путать с файлом/символом с тем же путём).
+    pub fn find_dir_node_by_path(&self, path: &str) -> Result<Option<Node>> {
+        Ok(self.redacted(self.find_dir_node_by_path_raw(path)?))
+    }
+
+    /// Возвращает узлы по списку идентификаторов (порядок не гарантируется).
+    pub fn get_nodes_by_ids(&self, ids: &[uuid::Uuid]) -> Result<Vec<Node>> {
+        Ok(self.redacted(self.get_nodes_by_ids_raw(ids)?))
     }
 
     /// Возвращает внутреннее соединение (для транзакций и продвинутых операций).
@@ -106,8 +203,7 @@ impl Store {
         Ok(())
     }
 
-    /// Находит узел по ID.
-    pub fn get_node(&self, id: &uuid::Uuid) -> Result<Option<Node>> {
+    fn get_node_raw(&self, id: &uuid::Uuid) -> Result<Option<Node>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, kind, path, name, parent_id, lang, hash, line_start, line_end, signature, doc_summary, tokens_est, rank
              FROM node WHERE id = ?1",
@@ -172,8 +268,7 @@ impl Store {
         Ok(exists)
     }
 
-    /// Находит узел по точному пути.
-    pub fn find_node_by_path(&self, path: &str) -> Result<Option<Node>> {
+    fn find_node_by_path_raw(&self, path: &str) -> Result<Option<Node>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, kind, path, name, parent_id, lang, hash, line_start, line_end, signature, doc_summary, tokens_est, rank
              FROM node WHERE path = ?1",
@@ -228,8 +323,7 @@ impl Store {
         }
     }
 
-    /// Находит узлы по пути (префиксный поиск).
-    pub fn find_nodes_by_path_prefix(&self, path_prefix: &str) -> Result<Vec<Node>> {
+    fn find_nodes_by_path_prefix_raw(&self, path_prefix: &str) -> Result<Vec<Node>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, kind, path, name, parent_id, lang, hash, line_start, line_end, signature, doc_summary, tokens_est, rank
              FROM node WHERE path LIKE ?1 ORDER BY path",
@@ -311,8 +405,7 @@ impl Store {
         Ok(edges)
     }
 
-    /// Находит узел файла (kind = 'file') по пути. У символов путь совпадает с путём файла.
-    pub fn find_file_node_by_path(&self, path: &str) -> Result<Option<Node>> {
+    fn find_file_node_by_path_raw(&self, path: &str) -> Result<Option<Node>> {
         let mut stmt = self.conn.prepare(&format!(
             "SELECT {NODE_COLS} FROM node WHERE path = ?1 AND kind = 'file'"
         ))?;
@@ -364,8 +457,7 @@ impl Store {
         Ok(())
     }
 
-    /// Все узлы индекса, по убыванию ранга.
-    pub fn get_all_nodes(&self) -> Result<Vec<Node>> {
+    fn get_all_nodes_raw(&self) -> Result<Vec<Node>> {
         let mut stmt = self.conn.prepare(&format!(
             "SELECT {NODE_COLS} FROM node ORDER BY rank DESC, path, line_start"
         ))?;
@@ -390,8 +482,7 @@ impl Store {
         Ok(out)
     }
 
-    /// Все узлы заданных видов, по убыванию ранга.
-    pub fn nodes_of_kinds(&self, kinds: &[NodeKind]) -> Result<Vec<Node>> {
+    fn nodes_of_kinds_raw(&self, kinds: &[NodeKind]) -> Result<Vec<Node>> {
         let list: Vec<String> = kinds.iter().map(|k| format!("'{}'", k)).collect();
         let sql = format!(
             "SELECT {NODE_COLS} FROM node WHERE kind IN ({}) ORDER BY rank DESC, path, line_start",
@@ -406,8 +497,7 @@ impl Store {
         Ok(out)
     }
 
-    /// Все узлы-файлы индекса.
-    pub fn file_nodes(&self) -> Result<Vec<Node>> {
+    fn file_nodes_raw(&self) -> Result<Vec<Node>> {
         let mut stmt = self.conn.prepare(&format!(
             "SELECT {NODE_COLS} FROM node WHERE kind = 'file' ORDER BY path"
         ))?;
@@ -419,8 +509,7 @@ impl Store {
         Ok(out)
     }
 
-    /// Все узлы-символы (всё, кроме каталогов и файлов).
-    pub fn symbol_nodes(&self) -> Result<Vec<Node>> {
+    fn symbol_nodes_raw(&self) -> Result<Vec<Node>> {
         let mut stmt = self.conn.prepare(&format!(
             "SELECT {NODE_COLS} FROM node WHERE kind NOT IN ('dir','file') ORDER BY path, line_start"
         ))?;
@@ -432,8 +521,7 @@ impl Store {
         Ok(out)
     }
 
-    /// Все узлы одного файла (сам файл и символы), по порядку строк.
-    pub fn nodes_in_file(&self, path: &str) -> Result<Vec<Node>> {
+    fn nodes_in_file_raw(&self, path: &str) -> Result<Vec<Node>> {
         let mut stmt = self.conn.prepare(&format!(
             "SELECT {NODE_COLS} FROM node WHERE path = ?1 ORDER BY (kind = 'file') DESC, line_start"
         ))?;
@@ -445,8 +533,7 @@ impl Store {
         Ok(out)
     }
 
-    /// Символы с точным именем (без файлов и каталогов), по убыванию ранга.
-    pub fn symbols_by_name(&self, name: &str) -> Result<Vec<Node>> {
+    fn symbols_by_name_raw(&self, name: &str) -> Result<Vec<Node>> {
         let mut stmt = self.conn.prepare(&format!(
             "SELECT {NODE_COLS} FROM node WHERE name = ?1 AND kind NOT IN ('file','dir') ORDER BY rank DESC, path"
         ))?;
@@ -458,9 +545,7 @@ impl Store {
         Ok(out)
     }
 
-    /// Полнотекстовый поиск по имени, сигнатуре, докстрингу и пути.
-    /// Запрос превращается в безопасное префиксное выражение FTS5.
-    pub fn search_nodes(&self, query: &str, limit: usize) -> Result<Vec<Node>> {
+    fn search_nodes_raw(&self, query: &str, limit: usize) -> Result<Vec<Node>> {
         let terms: Vec<String> = query
             .split(|c: char| !(c.is_alphanumeric() || c == '_'))
             .filter(|t| !t.is_empty())
@@ -592,8 +677,7 @@ impl Store {
         self.conn.transaction()
     }
 
-    /// Находит узел каталога по точному пути (не путать с файлом/символом с тем же путём).
-    pub fn find_dir_node_by_path(&self, path: &str) -> Result<Option<Node>> {
+    fn find_dir_node_by_path_raw(&self, path: &str) -> Result<Option<Node>> {
         let mut stmt = self.conn.prepare(&format!(
             "SELECT {NODE_COLS} FROM node WHERE path = ?1 AND kind = 'dir'"
         ))?;
@@ -604,8 +688,7 @@ impl Store {
         }
     }
 
-    /// Возвращает узлы по списку идентификаторов (порядок не гарантируется).
-    pub fn get_nodes_by_ids(&self, ids: &[uuid::Uuid]) -> Result<Vec<Node>> {
+    fn get_nodes_by_ids_raw(&self, ids: &[uuid::Uuid]) -> Result<Vec<Node>> {
         let mut out = Vec::with_capacity(ids.len());
         for id in ids {
             if let Some(node) = self.get_node(id)? {
@@ -852,20 +935,4 @@ fn row_to_node(row: &rusqlite::Row<'_>) -> rusqlite::Result<Node> {
         tokens_est: row.get(11)?,
         rank: row.get(12)?,
     })
-}
-
-/// Читает файл проекта построчно с проверкой границ проекта (раздел 10.1 ТЗ).
-/// Возвращает строки файла; ошибка, если путь вне корня или файл не найден.
-pub fn read_project_lines(root: &str, rel_path: &str) -> anyhow::Result<Vec<String>> {
-    let root = std::fs::canonicalize(root)
-        .map_err(|e| anyhow::anyhow!("корень проекта недоступен: {e}"))?;
-    let full: std::path::PathBuf = root.join(rel_path);
-    let canonical = std::fs::canonicalize(&full)
-        .map_err(|_| anyhow::anyhow!("файл «{rel_path}» не найден на диске"))?;
-    if !canonical.starts_with(&root) {
-        anyhow::bail!("путь «{rel_path}» вне проекта");
-    }
-    let content = std::fs::read_to_string(&canonical)
-        .map_err(|e| anyhow::anyhow!("не удалось прочитать «{rel_path}»: {e}"))?;
-    Ok(content.lines().map(str::to_string).collect())
 }
