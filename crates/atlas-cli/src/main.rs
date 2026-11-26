@@ -1,6 +1,6 @@
 use anyhow::{bail, Context, Result};
 use atlas_core::filter::{filter_output, FilterOptions};
-use atlas_core::report::{report_json, ReportGenerator, ReportOptions};
+use atlas_core::report::{report_html, report_json, ReportGenerator, ReportOptions};
 use atlas_indexer::{FileWatcher, IncrementalUpdater, ProjectIndexer, WatchEvent};
 use atlas_mcp::{McpConfig, McpServer, Transport};
 use atlas_store::Store;
@@ -60,7 +60,7 @@ enum Commands {
         /// Корень проекта (по умолчанию текущий каталог)
         #[arg(long, value_name = "PROJECT_PATH")]
         project: Option<String>,
-        /// Формат: json или markdown
+        /// Формат: json, markdown или html
         #[arg(long, default_value = "json")]
         format: String,
     },
@@ -187,7 +187,8 @@ fn main() -> Result<()> {
                     println!("{}", ReportGenerator::new(options).generate(&store)?);
                 }
                 "json" => println!("{}", serde_json::to_string_pretty(&report_json(&store, &root)?)?),
-                other => bail!("неизвестный формат «{other}»: json или markdown"),
+                "html" => println!("{}", report_html(&store, &root)?),
+                other => bail!("неизвестный формат «{other}»: json, markdown или html"),
             }
         }
     }

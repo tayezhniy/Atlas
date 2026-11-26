@@ -22,7 +22,7 @@ def compute_savings(results: list[dict]) -> dict:
     """Вычисляет экономию токенов по задачам."""
     tasks = {}
     for r in results:
-        task = r['task']
+        task = r['task_name']
         if task not in tasks:
             tasks[task] = {'without_atlas': [], 'with_atlas': []}
         mode = r['mode']

@@ -173,6 +173,7 @@ dependencies = [
  "tree-sitter-haskell",
  "tree-sitter-java",
  "tree-sitter-kt",
+ "tree-sitter-language",
  "tree-sitter-lua",
  "tree-sitter-ocaml",
  "tree-sitter-prisma",
