@@ -84,6 +84,7 @@ export default function Settings({ projectPath, isOpen, onClose }: SettingsProps
 
   const loadSettings = async () => {
     setLoading(true)
+    resetToDefaults() // иначе значения прошлого проекта запишутся в этот
     try {
       const result = await window.atlasAPI!.settings.all(projectPath)
       if (result.settings) {
@@ -331,8 +332,8 @@ export default function Settings({ projectPath, isOpen, onClose }: SettingsProps
               <div className="space-y-4">
                 <h3 className="font-medium">Закрытые пути (секреты)</h3>
                 <p className="text-xs text-muted-foreground">
-                  Эти файлы никогда не будут отданы через MCP, даже при прямом запросе.
-                  Значения, похожие на ключи/токены, автоматически маскируются.
+                  Встроенный список закрытых путей действует всегда. Свои паттерны пока только сохраняются
+                  и на ответы MCP не влияют.
                 </p>
                 <div className="flex gap-2 mb-3">
                   <input
@@ -366,10 +367,10 @@ export default function Settings({ projectPath, isOpen, onClose }: SettingsProps
               <div className="border-t pt-4">
                 <h3 className="font-medium mb-3">Маскировка секретов</h3>
                 <p className="text-xs text-muted-foreground mb-3">
-                  Автоматически маскируются значения после ключевых слов:
+                  Эвристика маскирует значения под такими именами (секрет под нейтральным именем она не распознает):
                 </p>
                 <div className="grid grid-cols-2 gap-2 text-xs">
-                  {['api_key', 'apikey', 'secret', 'password', 'access_token', 'auth_token', 'private_key', 'authorization', 'bearer'].map(k => (
+                  {['api_key', 'secret', 'password', 'passwd', '…token', 'private_key', 'access_key', 'authorization', 'bearer'].map(k => (
                     <code key={k} className="px-2 py-1 bg-muted rounded">{k}</code>
                   ))}
                 </div>
@@ -460,8 +461,7 @@ export default function Settings({ projectPath, isOpen, onClose }: SettingsProps
 
         {/* Статусная строка */}
         <div className="border-t p-3 bg-muted/30 flex items-center justify-between text-xs text-muted-foreground">
-          <span>Настройки хранятся в .atlas/index.db (таблица settings)</span>
-          <span>Изменения вступят в силу после сохранения</span>
+          <span className="text-amber-700">Настройки сохраняются в .atlas/index.db, но индексатор и MCP-сервер их пока не применяют.</span>
         </div>
       </div>
     </div>

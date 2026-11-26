@@ -125,6 +125,15 @@ impl McpServer {
                 ok_reply(id, json!({"tools": tools}))
             }
             "tools/call" => self.call_tool(id, &params),
+            // Структурированные данные для интерфейса, не для нейросети
+            "atlas/ui" => {
+                let method = params.get("method").and_then(Value::as_str).unwrap_or("");
+                let args = params.get("args").cloned().unwrap_or_else(|| json!({}));
+                match self.registry.ui(&self.project_root, method, &args) {
+                    Ok(result) => ok_reply(id, result),
+                    Err(e) => error_reply(id, -32000, &e.to_string()),
+                }
+            }
             other => error_reply(id, -32601, &format!("метод не поддерживается: {other}")),
         };
         Some(reply.to_string())
@@ -208,6 +217,17 @@ mod tests {
         assert!(ok["result"]["content"][0]["text"].as_str().unwrap().contains("Состояние индекса"));
         let bad = call(&mut s, json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"read","arguments":{"symbol":"nope"}}}));
         assert_eq!(bad["result"]["isError"], true);
+    }
+
+    #[test]
+    fn ui_method_returns_structured_data() {
+        let (_d, mut s) = server();
+        let r = call(&mut s, json!({"jsonrpc":"2.0","id":7,"method":"atlas/ui","params":{"method":"overview"}}));
+        assert!(r["result"]["top"].is_array() && r["result"]["edges"].is_array(), "{r}");
+        let r = call(&mut s, json!({"jsonrpc":"2.0","id":8,"method":"atlas/ui","params":{"method":"search","args":{"query":"x"}}}));
+        assert!(r["result"]["items"].is_array(), "{r}");
+        let r = call(&mut s, json!({"jsonrpc":"2.0","id":9,"method":"atlas/ui","params":{"method":"nope"}}));
+        assert_eq!(r["error"]["code"], -32000);
     }
 
     #[test]

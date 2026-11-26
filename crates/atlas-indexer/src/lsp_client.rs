@@ -22,7 +22,7 @@ use serde_json::{json, Value as JsonValue};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::{Mutex, RwLock, mpsc, oneshot};
 use tracing::{debug, info};
@@ -31,6 +31,33 @@ use url::Url;
 // ---------------------------------------------------------------------------
 // LSP-клиент
 // ---------------------------------------------------------------------------
+
+const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Сообщение LSP: заголовок с длиной тела, пустая строка, тело.
+fn frame(body: &str) -> String {
+    format!("Content-Length: {}\r\n\r\n{body}", body.len())
+}
+
+async fn read_message<R: tokio::io::AsyncBufRead + Unpin>(reader: &mut R) -> Option<JsonValue> {
+    let mut length = None;
+    loop {
+        let mut header = String::new();
+        if reader.read_line(&mut header).await.ok()? == 0 {
+            return None;
+        }
+        let header = header.trim();
+        if header.is_empty() {
+            break;
+        }
+        if let Some(value) = header.strip_prefix("Content-Length:") {
+            length = value.trim().parse::<usize>().ok();
+        }
+    }
+    let mut body = vec![0; length.filter(|n| *n <= 32 * 1024 * 1024)?];
+    reader.read_exact(&mut body).await.ok()?;
+    serde_json::from_slice(&body).ok()
+}
 
 /// Клиент для общения с LSP-сервером через stdio JSON-RPC.
 pub struct LspClient {
@@ -116,21 +143,13 @@ impl LspClient {
     /// Запускает фоновую задачу для чтения ответов от LSP-сервера.
     async fn spawn_reader_task(&self, stdout: tokio::process::ChildStdout) {
         let response_tx = self.response_tx.clone();
-        let mut reader = BufReader::new(stdout).lines();
+        let mut reader = BufReader::new(stdout);
 
         tokio::spawn(async move {
-            while let Ok(Some(line)) = reader.next_line().await {
-                if line.trim().is_empty() {
-                    continue;
-                }
-                // Parse JSON-RPC response
-                if let Ok(value) = serde_json::from_str::<JsonValue>(&line) {
-                    if let Some(id) = value.get("id").and_then(|v| v.as_u64()) {
-                        // Send response to waiting request via channel
-                        if response_tx.send((id, value)).is_err() {
-                            // Channel closed, exit
-                            break;
-                        }
+            while let Some(value) = read_message(&mut reader).await {
+                if let Some(id) = value.get("id").and_then(|v| v.as_u64()) {
+                    if response_tx.send((id, value)).is_err() {
+                        break;
                     }
                 }
             }
@@ -369,7 +388,7 @@ impl LspClient {
 
         let mut writer = self.writer.lock().await;
         if let Some(w) = writer.as_mut() {
-            let msg = format!("{}\r\n", serde_json::to_string(&request)?);
+            let msg = frame(&serde_json::to_string(&request)?);
             w.write_all(msg.as_bytes()).await?;
             w.flush().await?;
         } else {
@@ -379,7 +398,14 @@ impl LspClient {
         drop(writer);
 
         // Wait for response
-        let response = rx.await.context("LSP request cancelled")?;
+        // Без таймаута молчащий или упавший сервер подвешивает всю индексацию
+        let response = match tokio::time::timeout(REQUEST_TIMEOUT, rx).await {
+            Ok(received) => received.context("LSP request cancelled")?,
+            Err(_) => {
+                self.pending.write().await.remove(&id);
+                anyhow::bail!("LSP-сервер не ответил на {method} за {} с", REQUEST_TIMEOUT.as_secs());
+            }
+        };
         
         if let Some(error) = response.get("error") {
             return Err(anyhow::anyhow!("LSP error: {}", error));
@@ -414,7 +440,7 @@ impl LspClient {
 
         let mut writer = self.writer.lock().await;
         if let Some(w) = writer.as_mut() {
-            let msg = format!("{}\r\n", serde_json::to_string(&notification)?);
+            let msg = frame(&serde_json::to_string(&notification)?);
             w.write_all(msg.as_bytes()).await?;
             w.flush().await?;
         }
@@ -597,6 +623,15 @@ mod tests {
         assert!(LspRegistry::for_language("go").is_some());
         assert!(LspRegistry::for_language("java").is_some());
         assert!(LspRegistry::for_language("unknown").is_none());
+    }
+
+    #[tokio::test]
+    async fn messages_use_content_length_framing() {
+        let data = format!("{}{}", frame(r#"{"id":1}"#), frame(r#"{"id":2}"#));
+        let mut reader = BufReader::new(data.as_bytes());
+        assert_eq!(read_message(&mut reader).await.unwrap()["id"], 1);
+        assert_eq!(read_message(&mut reader).await.unwrap()["id"], 2);
+        assert!(read_message(&mut reader).await.is_none());
     }
 
     #[test]

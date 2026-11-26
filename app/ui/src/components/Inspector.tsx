@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import {
   File,
   ChevronRight,
@@ -41,22 +41,30 @@ export default function Inspector({ projectPath, nodeId, onGraphSelect }: Inspec
 
   const isExpanded = (section: string) => expandedSections.has(section)
 
+  const latest = useRef<string | null>(null)
+
   const loadNode = useCallback(async (id: string) => {
     if (!window.atlasAPI || !id) return
+    latest.current = id
     setLoading(true)
     try {
       // Пытаемся найти узел через соседей (symbol -> neighbours)
       const result = await window.atlasAPI.neighbors({ projectPath, target: id })
+      if (latest.current !== id) return
       setDetails({
         name: result.node.name,
         kind: result.node.kind,
         path: result.node.path,
+        line_start: result.node.line_start ?? undefined,
+        line_end: result.node.line_end ?? undefined,
+        signature: result.node.signature ?? undefined,
       })
       setEdges({
         outgoing: result.outgoing,
         incoming: result.incoming,
       })
     } catch (_) {
+      if (latest.current !== id) return
       // Если не символ, попробуем как путь к файлу
       setDetails({ name: id.split('/').pop() ?? id, kind: 'file', path: id })
       setEdges({ outgoing: [], incoming: [] })
@@ -147,13 +155,13 @@ export default function Inspector({ projectPath, nodeId, onGraphSelect }: Inspec
                 <div className="space-y-1">
                   <div className="flex items-center gap-2 mb-1">
                     <ArrowUpRight className="w-3 h-3 text-green-600" />
-                    <span className="text-green-700 font-semibold">Вызывает ({edges.outgoing.length}):</span>
+                    <span className="text-green-700 font-semibold">Исходящие ({edges.outgoing.length}):</span>
                   </div>
                   {edges.outgoing.slice(0, 10).map((e) => (
                     <div
-                      key={e.target_id}
+                      key={`${e.kind}:${e.target_id}`}
                       className="flex items-center justify-between px-2 py-1 bg-green-50 rounded hover:bg-green-100 cursor-pointer group"
-                      onClick={() => onGraphSelect(e.target_id)}
+                      onClick={() => onGraphSelect(`${e.target_path}::${e.target_name}`)}
                     >
                       <span className="truncate">{e.target_name}</span>
                       <span className="text-[10px] text-green-600">{e.kind}</span>
@@ -170,13 +178,13 @@ export default function Inspector({ projectPath, nodeId, onGraphSelect }: Inspec
                 <div className="mt-2 space-y-1">
                   <div className="flex items-center gap-2 mb-1">
                     <ArrowLeftRight className="w-3 h-3 text-blue-600" />
-                    <span className="text-blue-700 font-semibold">Входит в ({edges.incoming.length}):</span>
+                    <span className="text-blue-700 font-semibold">Входящие ({edges.incoming.length}):</span>
                   </div>
                   {edges.incoming.slice(0, 10).map((e) => (
                     <div
-                      key={e.target_id}
+                      key={`${e.kind}:${e.target_id}`}
                       className="flex items-center justify-between px-2 py-1 bg-blue-50 rounded hover:bg-blue-100 cursor-pointer group"
-                      onClick={() => onGraphSelect(e.target_id)}
+                      onClick={() => onGraphSelect(`${e.target_path}::${e.target_name}`)}
                     >
                       <span className="truncate">{e.target_name}</span>
                       <span className="text-[10px] text-blue-600">{e.kind}</span>
@@ -212,9 +220,6 @@ export default function Inspector({ projectPath, nodeId, onGraphSelect }: Inspec
           onClick={() => onGraphSelect(nodeId)}
         >
           На граф
-        </button>
-        <button className="flex-1 px-2 py-1.5 text-xs border rounded hover:bg-muted text-red-500">
-          Закрыть для НС
         </button>
       </div>
     </div>

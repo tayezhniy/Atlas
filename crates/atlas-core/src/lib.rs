@@ -2,6 +2,7 @@ pub mod filter;
 pub mod graph;
 pub mod ranking;
 pub mod search;
+pub mod secrets;
 pub mod map;
 pub mod report;
 

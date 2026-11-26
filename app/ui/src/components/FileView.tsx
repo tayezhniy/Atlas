@@ -1,418 +1,182 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
-import {
-  EditorView, basicSetup, Decoration, DecorationSet,
-  ViewPlugin, ViewUpdate, WidgetType
-} from '@codemirror/view'
-import { EditorState, StateField, StateEffect } from '@codemirror/state'
+import { useState, useEffect, useRef } from 'react'
+import { EditorView, basicSetup } from 'codemirror'
+import { lineNumbers } from '@codemirror/view'
+import { EditorState } from '@codemirror/state'
 import { rust } from '@codemirror/lang-rust'
 import { python } from '@codemirror/lang-python'
 import { javascript } from '@codemirror/lang-javascript'
 import { json } from '@codemirror/lang-json'
 import { markdown } from '@codemirror/lang-markdown'
-import { toml } from '@codemirror/lang-toml'
 import { oneDark } from '@codemirror/theme-one-dark'
-import { Copy, Link2, Zap } from 'lucide-react'
+import { Copy, Link2 } from 'lucide-react'
+import type { FileContent, SymbolNode } from '../types'
 
 interface FileViewProps {
   projectPath: string
-  nodeId: string | null
+  /** путь файла, `путь::имя` или идентификатор узла */
+  nodeId: string
   onGoToDefinition: (symbol: string, path?: string) => void
   onGraphHighlight: (nodeId: string) => void
 }
 
 type ViewMode = 'full' | 'folded' | 'signature' | 'doc'
 
-function getLanguageSupport(lang: string) {
-  switch (lang) {
-    case 'rust':
+const MODE_TITLES: Record<ViewMode, string> = {
+  full: 'Полный код',
+  folded: 'Свёрнуто (только каркас)',
+  signature: 'Только сигнатуры',
+  doc: 'Сигнатуры и документация',
+}
+
+function languageSupport(path: string) {
+  switch (path.split('.').pop()) {
+    case 'rs':
       return rust()
-    case 'python':
+    case 'py':
       return python()
-    case 'typescript':
+    case 'ts':
     case 'tsx':
       return javascript({ jsx: true, typescript: true })
-    case 'javascript':
+    case 'js':
     case 'jsx':
       return javascript({ jsx: true })
     case 'json':
       return json()
-    case 'markdown':
+    case 'md':
       return markdown()
-    case 'toml':
-      return toml()
     default:
       return []
   }
 }
 
-// Эффект для подсветки AI-токенов (имитация)
-const aiHighlightPlugin = ViewPlugin.fromClass(class {
-  decorations: DecorationSet
-  constructor(view: EditorView) {
-    this.decorations = this.buildDecorations(view)
-  }
-  update(update: ViewUpdate) {
-    if (update.docChanged || update.viewportChanged) {
-      this.decorations = this.buildDecorations(update.view)
-    }
-  }
-  buildDecorations(view: EditorView): DecorationSet {
-    const builder = []
-    // Подсвечиваем строки, которые были "прочитаны" ИИ (демо)
-    for (const { from, to } of view.visibleRanges) {
-      for (let pos = from; pos <= to; ) {
-        const line = view.state.doc.lineAt(pos)
-        // Демо: подсвечиваем каждую 7-ю строку как "ИИ-активную"
-        if (line.number % 7 === 0 && line.text.trim()) {
-          builder.push(
-            Decoration.line({ class: 'cm-ai-highlight' }).range(line.from)
-          )
-        }
-        pos = line.to + 1
-      }
-    }
-    return DecorationSet.from(builder)
-  }
-}, {
-  decorations: v => v.decorations
-})
-
-// Виджет для свёрнутых блоков
-class FoldWidget extends WidgetType {
-  constructor(private lines: number) { super() }
-  toDOM() {
-    const span = document.createElement('span')
-    span.className = 'cm-fold-widget'
-    span.textContent = `  … ${this.lines} строк свернуто …`
-    return span
-  }
-  ignoreEvent() { return false }
-}
-
-// Состояние для режима просмотра
-const viewModeField = StateField.define<ViewMode>({
-  create: () => 'full',
-  update(mode, tr) {
-    for (const effect of tr.effects) {
-      if (effect.is(setViewMode)) return effect.value
-    }
-    return mode
-  },
-})
-
-const setViewMode = StateEffect.define<ViewMode>()
-
-export default function FileView({
-  projectPath,
-  nodeId,
-  onGoToDefinition,
-  onGraphHighlight,
-}: FileViewProps) {
+export default function FileView({ projectPath, nodeId, onGoToDefinition, onGraphHighlight }: FileViewProps) {
   const editorRef = useRef<HTMLDivElement>(null)
   const viewRef = useRef<EditorView | null>(null)
-  const [language, setLanguage] = useState<string>('text')
-  const [content, setContent] = useState<string>('')
-  const [loading, setLoading] = useState(false)
-  const [symbols, setSymbols] = useState<Array<{ id: string; name: string; kind: string; line: number; signature?: string }>>([])
-  const [viewMode, setViewModeState] = useState<ViewMode>('full')
-  const [aiTokensUsed, setAiTokensUsed] = useState(0)
-  const [showAiHighlight, setShowAiHighlight] = useState(false)
+  const [file, setFile] = useState<FileContent | null>(null)
+  const [symbols, setSymbols] = useState<SymbolNode[]>([])
+  const [mode, setMode] = useState<ViewMode>('full')
+  const [error, setError] = useState<string | null>(null)
 
-  // Создаём редактор при монтировании
   useEffect(() => {
-    if (!editorRef.current || !window.atlasAPI) return
-
-    const state = EditorState.create({
-      doc: content,
-      extensions: [
-        basicSetup,
-        EditorView.editable.of(false),
-        EditorView.lineWrapping,
-        getLanguageSupport(language),
-        oneDark,
-        viewModeField,
-        aiHighlightPlugin,
-        EditorView.theme({
-          '&': { height: '100%', fontSize: '13px', lineHeight: '1.6' },
-          '.cm-gutters': {
-            backgroundColor: 'transparent',
-            borderRight: '1px solid #374151',
-            minWidth: '3.5rem',
-            paddingRight: '0.5rem',
-          },
-          '.cm-lineNumbers': { color: '#9ca3af' },
-          '.cm-ai-highlight': {
-            backgroundColor: 'rgba(34, 197, 94, 0.1) !important',
-          },
-          '.cm-fold-widget': {
-            color: '#9ca3af',
-            fontStyle: 'italic',
-            padding: '0 0.5rem',
-            backgroundColor: 'rgba(156, 163, 175, 0.1)',
-            borderRadius: '4px',
-            marginLeft: '0.5rem',
-          },
-          '.cm-content': { caretColor: 'transparent' },
-        }),
-      ],
-    })
-
-    const view = new EditorView({ state, parent: editorRef.current })
-    viewRef.current = view
-
-    return () => { view.destroy() }
-  }, [language, content])
-
-  // Загружаем содержимое файла при изменении nodeId
-  useEffect(() => {
-    if (!nodeId || !window.atlasAPI || !viewRef.current) return
-
-    const loadFile = async () => {
-      setLoading(true)
-      try {
-        // Определяем режим загрузки
-        const mode = viewMode === 'folded' ? 'folded' : viewMode
-        const result = await window.atlasAPI.read({
-          projectPath,
-          path: nodeId,
-          mode,
-        })
-        const text = result.lines.map(l => l.text).join('\n')
-        setContent(text)
-        const ext = nodeId.split('.').pop() ?? 'text'
-        setLanguage(ext)
-        viewRef.current?.dispatch({
-          changes: { from: 0, to: viewRef.current.state.doc.length, insert: text },
-        })
-
-        // Оценка токенов
-        setAiTokensUsed(Math.ceil(text.length / 4))
-      } catch (err) {
-        console.error('Failed to load file:', err)
-      } finally {
-        setLoading(false)
-      }
-    }
-
-    loadFile()
-
-    // Загружаем контур файла (символы)
+    let stale = false
+    setError(null)
+    setFile(null)
     window.atlasAPI
-      .outline({ projectPath, path: nodeId })
-      .then((result) => {
-        setSymbols(
-          result.symbols.map((s) => ({
-            id: s.id,
-            name: s.name,
-            kind: s.kind,
-            line: s.line_start ?? 0,
-            signature: s.signature,
-          }))
-        )
+      .read({ projectPath, target: nodeId, mode })
+      .then(async (result) => {
+        const outline = await window.atlasAPI.outline({ projectPath, path: result.path })
+        if (stale) return
+        setFile(result)
+        setSymbols(outline.symbols)
       })
-      .catch(() => {
-        // outline может быть недоступен для неиндексированных файлов
+      .catch((err) => {
+        if (!stale) setError(err.message)
       })
-  }, [nodeId, projectPath, viewMode])
-
-  // Обработчик смены режима
-  const handleModeChange = useCallback((mode: ViewMode) => {
-    setViewModeState(mode)
-    if (viewRef.current) {
-      viewRef.current.dispatch({ effects: setViewMode.of(mode) })
+    return () => {
+      stale = true
     }
-    // Перезагружаем содержимое в новом режиме
-    if (nodeId && window.atlasAPI) {
-      window.atlasAPI.read({ projectPath, path: nodeId, mode })
-        .then(result => {
-          const text = result.lines.map(l => l.text).join('\n')
-          setContent(text)
-          viewRef.current?.dispatch({
-            changes: { from: 0, to: viewRef.current.state.doc.length, insert: text },
-          })
-          setAiTokensUsed(Math.ceil(text.length / 4))
-        })
-    }
-  }, [nodeId, projectPath])
+  }, [projectPath, nodeId, mode])
 
-  // Переход к определению (Ctrl+Click)
-  const handleClick = useCallback((e: React.MouseEvent) => {
-    if ((e.ctrlKey || e.metaKey) && e.target instanceof HTMLElement) {
-      const target = e.target.closest('.cm-line')
-      if (target && viewRef.current) {
-        const pos = viewRef.current.posAtCoords({ x: e.clientX, y: e.clientY })
-        if (pos) {
-          const line = viewRef.current.state.doc.lineAt(pos)
-          const text = line.text
-          // Ищем вызов функции в строке
-          const callMatch = text.match(/(\w+)\s*\(/)
-          if (callMatch) {
-            const funcName = callMatch[1]
-            onGoToDefinition(funcName, nodeId || undefined)
-          }
-        }
-      }
+  useEffect(() => {
+    if (!editorRef.current || !file) return
+    // В свёрнутых режимах строки идут не подряд: номера берём из ответа
+    const numbers = file.lines.map((l) => l.line)
+    const view = new EditorView({
+      parent: editorRef.current,
+      state: EditorState.create({
+        doc: file.lines.map((l) => l.text).join('\n'),
+        extensions: [
+          lineNumbers({ formatNumber: (n) => String(numbers[n - 1] ?? n) }),
+          basicSetup,
+          EditorState.readOnly.of(true),
+          EditorView.lineWrapping,
+          languageSupport(file.path),
+          oneDark,
+          EditorView.theme({ '&': { height: '100%', fontSize: '13px' } }),
+        ],
+      }),
+    })
+    viewRef.current = view
+    return () => {
+      view.destroy()
+      viewRef.current = null
     }
-  }, [nodeId, onGoToDefinition])
+  }, [file])
 
-  // Копирование пути
-  const copyPath = () => {
-    if (nodeId) navigator.clipboard.writeText(nodeId)
+  // Переход к определению: Ctrl+Click по имени
+  const handleClick = (e: React.MouseEvent) => {
+    const view = viewRef.current
+    if (!view || !(e.ctrlKey || e.metaKey)) return
+    const pos = view.posAtCoords({ x: e.clientX, y: e.clientY })
+    if (pos === null) return
+    const word = view.state.wordAt(pos)
+    if (word) onGoToDefinition(view.state.sliceDoc(word.from, word.to))
   }
 
-  if (!nodeId) {
-    return (
-      <div className="h-full flex items-center justify-center">
-        <div className="text-center">
-          <FileText className="w-12 h-12 text-muted-foreground mx-auto mb-2" />
-          <p className="text-muted-foreground text-sm">Выберите символ или файл для просмотра</p>
-        </div>
-      </div>
-    )
+  const scrollToSymbol = (symbol: SymbolNode) => {
+    const view = viewRef.current
+    if (!view || !file) return
+    const index = file.lines.findIndex((l) => l.line >= (symbol.line_start ?? 1))
+    if (index < 0) return
+    const line = view.state.doc.line(index + 1)
+    view.dispatch({ selection: { anchor: line.from }, effects: EditorView.scrollIntoView(line.from, { y: 'start' }) })
   }
 
-  const fileName = nodeId.split('/').pop() || nodeId
-  const isSymbol = nodeId.includes('::')
+  const path = file?.path ?? nodeId
 
   return (
     <div className="h-full flex flex-col bg-background">
-      {/* Заголовок файла с тулбаром */}
       <div className="h-9 border-b flex items-center justify-between px-3 text-[11px] bg-muted/50">
-        <div className="flex items-center gap-2 flex-1 min-w-0">
-          <span className="truncate font-medium">{fileName}</span>
-          {isSymbol && (
-            <>
-              <span className="text-muted-foreground">•</span>
-              <span className="text-blue-500">символ: {nodeId.split('::').pop()}</span>
-            </>
-          )}
-          <span className="text-muted-foreground">•</span>
-          <span className="text-blue-500 text-capitalize">{language}</span>
-          {loading && <span className="text-[10px] text-muted-foreground">• загрузка…</span>}
-        </div>
+        <span className="truncate font-medium flex-1" title={path}>{path}</span>
         <div className="flex items-center gap-1 ml-4">
-          {/* Режим просмотра */}
           <div className="flex border rounded bg-background" role="group" aria-label="Режим просмотра">
-            {(['full', 'folded', 'signature', 'doc'] as ViewMode[]).map(mode => (
+            {(Object.keys(MODE_TITLES) as ViewMode[]).map((m) => (
               <button
-                key={mode}
-                onClick={() => handleModeChange(mode)}
-                className={`px-2 py-1 text-[10px] transition-colors border-r last:border-0 ${
-                  viewMode === mode
-                    ? 'bg-primary text-primary-foreground'
-                    : 'text-muted-foreground hover:bg-muted'
+                key={m}
+                onClick={() => setMode(m)}
+                className={`px-2 py-1 text-[10px] border-r last:border-0 ${
+                  mode === m ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-muted'
                 }`}
-                title={mode === 'full' ? 'Полный код' : mode === 'folded' ? 'Свёрнуто (только каркас)' : mode === 'signature' ? 'Только сигнатура' : 'Документация'}
+                title={MODE_TITLES[m]}
               >
-                {mode.charAt(0).toUpperCase()}
+                {m.charAt(0).toUpperCase()}
               </button>
             ))}
           </div>
-          <div className="w-px h-5 bg-border mx-1" />
-          {/* AI подсветка */}
-          <button
-            onClick={() => setShowAiHighlight(v => !v)}
-            className={`p-1.5 rounded transition-colors ${showAiHighlight ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-muted'}`}
-            title={showAiHighlight ? 'Скрыть AI-подсветку' : 'Показать строки, использованные ИИ'}
-          >
-            <Zap className="w-3 h-3" />
-          </button>
-          <button
-            onClick={copyPath}
-            className="p-1.5 rounded transition-colors text-muted-foreground hover:bg-muted"
-            title="Копировать путь"
-          >
+          <button onClick={() => navigator.clipboard.writeText(path)} className="p-1.5 rounded text-muted-foreground hover:bg-muted" title="Копировать путь">
             <Copy className="w-3 h-3" />
           </button>
-          <button
-            onClick={() => onGraphHighlight(nodeId)}
-            className="p-1.5 rounded transition-colors text-muted-foreground hover:bg-muted"
-            title="Подсветить на графе"
-          >
+          <button onClick={() => onGraphHighlight(nodeId)} className="p-1.5 rounded text-muted-foreground hover:bg-muted" title="Подсветить на графе">
             <Link2 className="w-3 h-3" />
           </button>
         </div>
       </div>
 
-      {/* Редактор CodeMirror */}
-      <div className="flex-1 flex overflow-hidden relative" onClick={handleClick}>
-        <div
-          ref={editorRef}
-          className="flex-1 w-full h-full"
-          style={{ minWidth: 0 }}
-        />
-        {loading && (
-          <div className="absolute inset-0 flex items-center justify-center bg-background/80 backdrop-blur z-10">
-            Загрузка файла…
-          </div>
-        )}
-        {showAiHighlight && (
-          <div className="absolute top-2 right-2 bg-green-500/10 border border-green-500/20 text-green-700 text-[10px] px-2 py-1 rounded z-10">
-            AI-подсветка активна (демо)
-          </div>
-        )}
+      <div className="flex-1 overflow-hidden relative" onClick={handleClick}>
+        {error && <div className="p-4 text-xs text-red-600">{error}</div>}
+        {!error && !file && <div className="p-4 text-xs text-muted-foreground">Загрузка файла…</div>}
+        <div ref={editorRef} className="h-full w-full" />
       </div>
 
-      {/* Инфо-строка */}
-      <div className="h-9 border-t flex items-center justify-between px-3 text-[10px] text-muted-foreground bg-muted/50">
-        <div className="flex items-center gap-3">
-          <span>{content.split('\n').length} строк</span>
-          <span>•</span>
-          <span>{Math.ceil(content.length / 4)} токенов</span>
-          {aiTokensUsed > 0 && (
-            <>
-              <span>•</span>
-              <span className="text-green-600">AI: ~{aiTokensUsed} ток.</span>
-            </>
-          )}
-        </div>
-        <div className="flex items-center gap-2">
-          {symbols.length > 0 ? (
-            <span>Символов: {symbols.length}</span>
-          ) : (
-            <span>Символы: —</span>
-          )}
-        </div>
+      <div className="h-8 border-t flex items-center justify-between px-3 text-[10px] text-muted-foreground bg-muted/50">
+        <span>{file ? `${file.total} строк в файле, показано ${file.lines.length}` : '—'}</span>
+        <span>Символов: {symbols.length}</span>
       </div>
 
-      {/* Навигация по символам */}
       {symbols.length > 0 && (
         <div className="h-10 border-t flex items-center px-3 text-[10px] text-muted-foreground bg-muted/30 overflow-x-auto gap-1">
           {symbols.map((s) => (
             <button
               key={s.id}
-              className="px-2 py-1 hover:bg-muted rounded cursor-pointer transition-colors whitespace-nowrap flex items-center gap-1"
-              onClick={() => {
-                if (viewRef.current) {
-                  const line = viewRef.current.state.doc.line(s.line)
-                  viewRef.current.dispatch({
-                    selection: { anchor: line.from },
-                  })
-                  viewRef.current.scrollTo(line.from)
-                }
-              }}
-              title={`${s.kind}: ${s.signature || s.name} (L${s.line})`}
+              className="px-2 py-1 hover:bg-muted rounded whitespace-nowrap"
+              onClick={() => scrollToSymbol(s)}
+              title={`${s.kind}: ${s.signature || s.name} (L${s.line_start})`}
             >
-              <span className="text-[9px]">{getSymbolIcon(s.kind)}</span>
-              <span className="truncate max-w-[150px]">{s.name}</span>
-              <span className="text-[9px]">L{s.line}</span>
+              {s.name} L{s.line_start}
             </button>
           ))}
         </div>
       )}
     </div>
   )
-}
-
-function getSymbolIcon(kind: string) {
-  switch (kind) {
-    case 'function': return 'ƒ'
-    case 'method': return 'm'
-    case 'class': return 'C'
-    case 'interface': return 'I'
-    case 'type': return 'T'
-    case 'constant': return 'C'
-    case 'module': return 'M'
-    default: return '•'
-  }
 }

@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import {
   Folder, ChevronRight, ChevronDown, Code, FileText,
-  Eye, EyeOff, Copy, ExternalLink
+  Copy, ExternalLink
 } from 'lucide-react'
 import type { GraphNode } from '../types'
 
@@ -28,7 +28,7 @@ interface SymbolNode {
 interface FileTreeProps {
   projectPath: string
   overview: { top: GraphNode[]; langs: Record<string, number>; files: number } | null
-  onNodeSelect: (nodeId: string | null, nodeType?: 'file' | 'symbol') => void
+  onNodeSelect: (nodeId: string, nodeType?: 'file' | 'symbol') => void
   onGraphHighlight: (nodeId: string) => void
   selectedNode: string | null
 }
@@ -49,7 +49,7 @@ export default function FileTree({
 }: FileTreeProps) {
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
   const [treeData, setTreeData] = useState<FileTreeNode[]>([])
-  const [loading, setLoading] = useState(false)
+  const loading = false
   const [contextMenu, setContextMenu] = useState<ContextMenuState>({ x: 0, y: 0, node: null, visible: false })
 
   // Закрытие контекстного меню при клике вне
@@ -66,37 +66,23 @@ export default function FileTree({
       return
     }
     loadFullTree()
-  }, [projectPath])
+  }, [projectPath, overview])
 
   const loadFullTree = async () => {
-    setLoading(true)
-    try {
-      const result = await window.atlasAPI!.tree({ projectPath, path: '' })
-      const paths = result.top.map((n: GraphNode) => n.path)
-      const tree = buildTree(paths)
-      setTreeData(tree)
-    } catch {
-      // Fallback: строим из overview
-      if (overview) {
-        const paths = overview.top.map(n => n.path)
-        const tree = buildTree(paths)
-        setTreeData(tree)
-      }
-    } finally {
-      setLoading(false)
-    }
+    setTreeData(buildTree((overview?.top ?? []).map(n => n.path)))
   }
 
   const buildTree = (paths: string[]): FileTreeNode[] => {
     const root: FileTreeNode[] = []
     const nodeMap = new Map<string, FileTreeNode>()
+    const filePaths = new Set(paths)
 
     const getOrCreate = (path: string): FileTreeNode => {
       if (nodeMap.has(path)) return nodeMap.get(path)!
       const parts = path.split('/')
       const name = parts[parts.length - 1]
       const last = parts[parts.length - 1]
-      const isFileNode = last.includes('.') && !last.startsWith('.')
+      const isFileNode = filePaths.has(path)
       const node: FileTreeNode = {
         name,
         type: isFileNode ? 'file' : 'dir',
@@ -154,9 +140,9 @@ export default function FileTree({
         id: s.id,
         name: s.name,
         kind: s.kind,
-        line_start: s.line_start,
-        line_end: s.line_end,
-        signature: s.signature,
+        line_start: s.line_start ?? undefined,
+        line_end: s.line_end ?? undefined,
+        signature: s.signature ?? undefined,
       }))
       setTreeData(prev => updateNode(prev, node.path, { symbols, symbolsLoaded: true, symbolsLoading: false }))
     } catch {
@@ -202,12 +188,6 @@ export default function FileTree({
       case 'open-in-graph':
         onGraphHighlight(node.path)
         break
-      case 'open-external':
-        // TODO: открыть в внешнем редакторе
-        break
-      case 'exclude':
-        // TODO: добавить в исключения
-        break
     }
   }
 
@@ -228,7 +208,7 @@ export default function FileTree({
             }`}
             onClick={e => handleNodeClick(node, e as any)}
             onContextMenu={e => handleContextMenu(e as any, node)}
-            onDoubleClick={() => loadFileSymbols(node)}
+            onDoubleClick={() => { loadFileSymbols(node); toggleExpand(node.path) }}
             title={node.path}
           >
             {node.symbols !== undefined ? (
@@ -358,22 +338,6 @@ export default function FileTree({
           >
             <ExternalLink className="w-3 h-3" />
             Подсветить на графе
-          </button>
-          <button
-            className="w-full flex items-center gap-2 px-3 py-1.5 hover:bg-accent text-left"
-            onClick={() => handleContextAction('open-external', contextMenu.node!)}
-            role="menuitem"
-          >
-            <Eye className="w-3 h-3" />
-            Открыть во внешнем редакторе
-          </button>
-          <button
-            className="w-full flex items-center gap-2 px-3 py-1.5 hover:bg-accent text-left text-red-500"
-            onClick={() => handleContextAction('exclude', contextMenu.node!)}
-            role="menuitem"
-          >
-            <EyeOff className="w-3 h-3" />
-            Исключить из индекса
           </button>
         </div>
       )}

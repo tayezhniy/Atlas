@@ -1,33 +1,41 @@
-// Типы для API Atlas, доступного через window.atlasAPI (Electron preload)
+// Типы ответов window.atlasAPI (preload -> main -> метод atlas/ui сервера)
 
-// Результат поиска
-export interface SearchResult {
+export interface GraphNode {
   id: string
+  name: string
   kind: string
   path: string
-  name: string
-  lang?: string
-  line_start?: number
-  line_end?: number
-  signature?: string
-  doc?: string
+  lang?: string | null
+  line_start?: number | null
+  line_end?: number | null
+  signature?: string | null
+  doc?: string | null
+  rank?: number
+  tokens_est?: number
+}
+
+export type SymbolNode = GraphNode
+
+export interface SearchResult extends GraphNode {
   score: number
-  snippet?: string
 }
 
-// Символ в файле (outline)
-export interface SymbolNode {
-  id: string
+export interface GraphEdge {
+  source: string
+  target: string
   kind: string
-  name: string
-  path: string
-  line_start?: number
-  line_end?: number
-  signature?: string
-  doc?: string
+  confidence: string
 }
 
-// Связь между узлами (неighbours)
+export interface ProjectOverview {
+  root: string
+  files: number
+  symbols: number
+  langs: Record<string, number>
+  top: GraphNode[]
+  edges: GraphEdge[]
+}
+
 export interface EdgeInfo {
   kind: string
   direction: 'in' | 'out'
@@ -37,89 +45,96 @@ export interface EdgeInfo {
   confidence: string
 }
 
-// Узел графа
-export interface GraphNode {
-  id: string
-  name: string
-  kind: string
+export interface FileContent {
   path: string
-  rank?: number
-  tokens_est?: number
+  lang?: string | null
+  total: number
+  start: number
+  end: number
+  lines: Array<{ line: number; text: string }>
 }
 
-// Обзор проекта
-export interface ProjectOverview {
-  root: string
-  files: number
-  langs: Record<string, number>
-  top: GraphNode[]
+export interface IndexStatus {
+  indexed_at: string | null
+  nodes: Record<string, number>
+  edges: Record<string, number>
+  calls: {
+    by_tool: Array<{ tool: string; count: number; tokens_out: number }>
+    recent: Array<{ time: string; tool: string; tokens_out: number }>
+  }
 }
 
-// Состояние индекса (doctor)
-export interface DoctorResult {
-  ok: boolean
-  result?: any
-  output?: string
+export interface ReportData {
+  project: {
+    root: string
+    generated_at: string
+    files: number
+    symbols: number
+    languages: Record<string, number>
+  }
+  index_stats: {
+    nodes_by_kind: Record<string, number>
+    edges_by_kind: Record<string, number>
+    total_nodes: number
+    total_edges: number
+  }
+  top_symbols: Array<{
+    name: string
+    kind: string
+    path: string
+    rank: number
+    tokens_est: number
+    line_start?: number | null
+    line_end?: number | null
+  }>
+  call_graph: {
+    nodes: Array<{ id: string; name: string; kind: string; path: string; rank: number }>
+    edges: GraphEdge[]
+  }
+  token_usage: { calls: number; tokens_out: number }
 }
 
-// Глобальное API, инжектируемое preload-скриптом
 declare global {
   interface Window {
     atlasAPI: {
       ping: () => Promise<string>
+      chooseProject: () => Promise<string | null>
       openProject: (projectPath: string) => Promise<{ ok: boolean; projectPath: string }>
+      closeProject: (projectPath: string) => Promise<{ ok: boolean }>
       indexProject: (projectPath: string) => Promise<{ ok: boolean; output: string }>
-      doctor: (projectPath: string) => Promise<DoctorResult>
-      search: (args: {
-        projectPath: string
+      watch: (projectPath: string) => Promise<{ ok: boolean }>
+      doctor: (projectPath: string) => Promise<{ ok: boolean; output: string }>
+      overview: (projectPath: string) => Promise<ProjectOverview>
+      status: (projectPath: string) => Promise<IndexStatus>
+      search: (args: { projectPath: string; query: string; limit?: number }) => Promise<{
         query: string
-        limit?: number
-      }) => Promise<{ query: string; total: number; items: SearchResult[] }>
-      overview: (projectPath: string, path?: string) => Promise<ProjectOverview>
+        total: number
+        items: SearchResult[]
+      }>
       outline: (args: { projectPath: string; path: string }) => Promise<{
         path: string
         symbols: SymbolNode[]
       }>
+      /** target — путь файла, `путь::имя` или идентификатор узла */
       read: (args: {
         projectPath: string
-        path: string
-        start_line?: number
-        end_line?: number
+        target: string
         mode?: 'signature' | 'doc' | 'folded' | 'full'
-      }) => Promise<{
-        path: string
-        total: number
-        start: number
-        end: number
-        lines: Array<{ line: number; text: string }>
-      }>
+      }) => Promise<FileContent>
       neighbors: (args: { projectPath: string; target: string }) => Promise<{
-        node: { id: string; name: string; kind: string; path: string }
+        node: GraphNode
         outgoing: EdgeInfo[]
         incoming: EdgeInfo[]
       }>
-      contextFor: (args: {
-        projectPath: string
-        symbol: string
-        path?: string
-        max_tokens?: number
-      }) => Promise<{
-        symbol: { name: string; kind: string; path: string }
-        outgoing: EdgeInfo[]
-        incoming: EdgeInfo[]
-        tests: EdgeInfo[]
-        code: string
-      }>
-      status: (projectPath: string) => Promise<any>
-      tree: (args: { projectPath: string; path?: string }) => Promise<ProjectOverview>
-      callLog: (projectPath: string, options?: any) => Promise<any>
-      settings: {
-        get: (projectPath: string, key: string) => Promise<any>
-        set: (projectPath: string, key: string, value: string) => Promise<any>
-        all: (projectPath: string) => Promise<any>
+      mcpConfig: (projectPath: string) => Promise<string>
+      report: {
+        (args: { projectPath: string; format: 'json' }): Promise<ReportData>
+        (args: { projectPath: string; format: 'markdown' }): Promise<string>
       }
-      report: (projectPath: string, options?: any) => Promise<any>
-      closeProject: (projectPath: string) => Promise<{ ok: boolean }>
+      settings: {
+        all: (projectPath: string) => Promise<{ ok: boolean; settings: Record<string, any> }>
+        set: (projectPath: string, key: string, value: string) => Promise<{ ok: boolean }>
+      }
     }
   }
 }

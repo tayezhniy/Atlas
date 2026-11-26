@@ -1,12 +1,10 @@
 #!/usr/bin/env python3
 """
-Автоматизированный бенчмарк экономии токенов Atlas (раздел 14 ТЗ).
+Автоматизированный бенчмарк объёма ответов Atlas (раздел 14 ТЗ).
 
-Финальная версия:
-- Правильная обработка MCP notifications
-- Реалистичная симуляция "без Atlas" (с учётом контекста)
-- Задачи, соответствующие детерминированно сгенерированному коду
-- Только навигационные задачи (исключены health-check задачи вроде status)
+Ограничения: реальная нейросеть не участвует. Режим "без Atlas" симулируется
+(grep и чтение файлов целиком), последовательность вызовов задана заранее.
+Результат нельзя считать доказательством экономии токенов.
 """
 
 import json
@@ -43,7 +41,7 @@ TASKS = {
                 {"tool": "search", "args": {"query": "create_user", "limit": 10}},
                 {"tool": "read", "args": {"symbol": "create_user", "path": "src/services.rs", "mode": "full"}},
             ],
-            "verify": {"symbol": "create_user", "file": "src/services.rs"},
+            "expect": ["pub fn create_user"],
         },
         {
             "id": "small_2", 
@@ -52,15 +50,15 @@ TASKS = {
                 {"tool": "search", "args": {"query": "from_env", "limit": 20}},
                 {"tool": "neighbors", "args": {"symbol": "from_env"}},
             ],
-            "verify": {"symbol": "from_env"},
+            "expect": ["tests/integration.rs"],
         },
         {
             "id": "small_3",
-            "name": "Найти импорты serde в lib.rs",
+            "name": "Найти импорты serde в models.rs",
             "mcp_calls": [
-                {"tool": "outline", "args": {"path": "src/lib.rs"}},
+                {"tool": "outline", "args": {"path": "src/models.rs"}},
             ],
-            "verify": {"import": "serde", "file": "src/lib.rs"},
+            "expect": ["serde"],
         },
         {
             "id": "small_4",
@@ -69,7 +67,7 @@ TASKS = {
                 {"tool": "read", "args": {"symbol": "create_order", "path": "src/services.rs", "mode": "signature"}},
                 {"tool": "neighbors", "args": {"symbol": "create_order"}},
             ],
-            "verify": {"symbol": "create_order"},
+            "expect": ["create_order", "handle_create_order"],
         },
         {
             "id": "small_5",
@@ -78,7 +76,7 @@ TASKS = {
                 {"tool": "search", "args": {"query": "UserService", "limit": 20}},
                 {"tool": "outline", "args": {"path": "tests/integration.rs"}},
             ],
-            "verify": {"test_file": "tests/integration.rs"},
+            "expect": ["tests/integration.rs", "UserService"],
         },
     ],
     "medium": [
@@ -89,7 +87,7 @@ TASKS = {
                 {"tool": "search", "args": {"query": "authenticate", "limit": 10}},
                 {"tool": "read", "args": {"symbol": "authenticate", "path": "src/auth/service.py", "mode": "full"}},
             ],
-            "verify": {"symbol": "authenticate", "file": "src/auth/service.py"},
+            "expect": ["def authenticate"],
         },
         {
             "id": "medium_2",
@@ -98,7 +96,7 @@ TASKS = {
                 {"tool": "search", "args": {"query": "class User", "limit": 10}},
                 {"tool": "neighbors", "args": {"symbol": "User"}},
             ],
-            "verify": {"symbol": "User"},
+            "expect": ["src/auth/service.py"],
         },
         {
             "id": "medium_3",
@@ -107,7 +105,7 @@ TASKS = {
                 {"tool": "search", "args": {"query": "orders_routes", "limit": 10}},
                 {"tool": "outline", "args": {"path": "src/api/orders_routes.py"}},
             ],
-            "verify": {"file": "src/api/orders_routes.py"},
+            "expect": ["list_orders"],
         },
         {
             "id": "medium_4",
@@ -116,7 +114,7 @@ TASKS = {
                 {"tool": "read", "args": {"symbol": "create_product", "path": "src/products/service.py", "mode": "signature"}},
                 {"tool": "neighbors", "args": {"symbol": "create_product"}},
             ],
-            "verify": {"symbol": "create_product"},
+            "expect": ["def create_product"],
         },
         {
             "id": "medium_5",
@@ -125,7 +123,7 @@ TASKS = {
                 {"tool": "search", "args": {"query": "OrderService", "limit": 20}},
                 {"tool": "outline", "args": {"path": "tests/test_orders.py"}},
             ],
-            "verify": {"test_file": "tests/test_orders.py"},
+            "expect": ["test_orders_service_exists"],
         },
     ],
     "large": [
@@ -136,7 +134,7 @@ TASKS = {
                 {"tool": "search", "args": {"query": "BillingService", "limit": 20}},
                 {"tool": "overview", "args": {"path": "src/billing"}},
             ],
-            "verify": {"symbol": "BillingService"},
+            "expect": ["billing_0.ts", "billing_4.ts"],
         },
         {
             "id": "large_2",
@@ -145,7 +143,7 @@ TASKS = {
                 {"tool": "search", "args": {"query": "processBilling", "limit": 20}},
                 {"tool": "neighbors", "args": {"symbol": "processBilling"}},
             ],
-            "verify": {"symbol": "processBilling"},
+            "expect": ["processBilling", "billing_"],
         },
         {
             "id": "large_3",
@@ -154,7 +152,7 @@ TASKS = {
                 {"tool": "read", "args": {"symbol": "OrdersService", "path": "src/orders/orders_0.ts", "mode": "signature"}},
                 {"tool": "neighbors", "args": {"symbol": "OrdersService"}},
             ],
-            "verify": {"symbol": "OrdersService"},
+            "expect": ["class OrdersService"],
         },
         {
             "id": "large_4",
@@ -162,7 +160,7 @@ TASKS = {
             "mcp_calls": [
                 {"tool": "overview", "args": {}},
             ],
-            "verify": {"type": "overview"},
+            "expect": ["billing", "customers"],
         },
         {
             "id": "large_5",
@@ -171,7 +169,7 @@ TASKS = {
                 {"tool": "search", "args": {"query": "CustomersService", "limit": 20}},
                 {"tool": "overview", "args": {"path": "src/customers"}},
             ],
-            "verify": {"symbol": "CustomersService"},
+            "expect": ["customers_0.py", "customers_4.py"],
         },
     ],
 }
@@ -350,20 +348,15 @@ class BenchmarkRunner:
             print(f"PROJECT: {project_name} ({project_path})")
             print(f"{'='*60}")
             
-            # Check if index exists, if not create it
-            index_db = os.path.join(project_path, ".atlas", "index.db")
-            if not os.path.exists(index_db):
-                print("Indexing project...")
-                result = subprocess.run(
-                    [self.atlas_bin, "index", project_path],
-                    capture_output=True, text=True, timeout=300
-                )
-                if result.returncode != 0:
-                    print(f"Indexing failed: {result.stderr}")
-                    continue
-                print("Indexing done.")
-            else:
-                print("Using existing index.")
+            # Индекс всегда строится заново, чтобы мерить текущий код
+            print("Indexing project...")
+            result = subprocess.run(
+                [self.atlas_bin, "index", project_path],
+                capture_output=True, text=True, timeout=300
+            )
+            if result.returncode != 0:
+                print(f"Indexing failed: {result.stderr}")
+                continue
             
             tasks = TASKS[project_name]
             
@@ -402,6 +395,7 @@ class BenchmarkRunner:
         calls = 0
         correct = False
         error = None
+        outputs: List[str] = []
         accumulated_context = ""  # Накопленный контекст
         
         try:
@@ -455,6 +449,8 @@ class BenchmarkRunner:
                 else:
                     output = ""
                 
+                outputs.append(output)
+
                 # Токены: вход = накопленный контекст + запрос, выход = ответ
                 request_tokens = len(f"{tool} {json.dumps(args)}") // 4
                 tokens_in += len(accumulated_context) // 4 + request_tokens
@@ -467,7 +463,7 @@ class BenchmarkRunner:
                     accumulated_context = accumulated_context[-100000:]
                 
             # Проверка правильности
-            correct = self.verify_result(project_path, task)
+            correct = self.verify_result(task, outputs)
             
         except Exception as e:
             error = str(e)
@@ -496,6 +492,7 @@ class BenchmarkRunner:
         calls = 0
         correct = False
         error = None
+        outputs: List[str] = []
         
         try:
             for mcp_call in task["mcp_calls"]:
@@ -511,16 +508,20 @@ class BenchmarkRunner:
                     
                 if "result" in response:
                     content = response["result"].get("content", [])
+                    failed = response["result"].get("isError", False)
                     for c in content:
                         if c.get("type") == "text":
                             text = c.get("text", "")
                             tokens_out += client.estimate_tokens(text)
+                            # текст ошибки и "ничего не найдено" повторяют запрос: не ответ
+                            if not failed and "ничего не найдено" not in text:
+                                outputs.append(text)
                             
                 # Входные токены: только запрос (контекст не накапливается благодаря бюджетам)
                 request_tokens = len(f"{tool} {json.dumps(args)}") // 4
                 tokens_in += request_tokens
             
-            correct = self.verify_result(client.project_path, task)
+            correct = self.verify_result(task, outputs)
             
         except Exception as e:
             error = str(e)
@@ -541,34 +542,15 @@ class BenchmarkRunner:
             error=error
         )
         
-    def verify_result(self, project_path: str, task: dict) -> bool:
-        verify = task.get("verify", {})
-        if "symbol" in verify:
-            symbol = verify["symbol"]
-            result = subprocess.run(
-                ["grep", "-r", symbol, project_path, "--include=*.rs", "--include=*.py", "--include=*.ts"],
-                capture_output=True, text=True
-            )
-            return len(result.stdout.strip()) > 0
-        if "file" in verify:
-            return os.path.exists(os.path.join(project_path, verify["file"]))
-        if "test_file" in verify:
-            return os.path.exists(os.path.join(project_path, verify["test_file"]))
-        if "path" in verify:
-            return os.path.exists(os.path.join(project_path, verify["path"]))
-        if "import" in verify:
-            imp = verify["import"]
-            file = verify.get("file", "")
-            if file:
-                full = os.path.join(project_path, file)
-                if os.path.exists(full):
-                    with open(full) as f:
-                        return imp in f.read()
-            return False
-        if verify.get("type") in ("overview",):
-            return True
-        return True
-        
+    def verify_result(self, task: dict, outputs: List[str]) -> bool:
+        """Ответ засчитан, только если всё ожидаемое есть в выводе инструментов.
+
+        Эталоны составлены по исходникам тестовых проектов. Это проверка полноты
+        данных, а не того, сумела бы модель сделать из них верный вывод.
+        """
+        text = "\n".join(outputs)
+        return all(e in text for e in task["expect"])
+
     def save_results(self):
         os.makedirs("bench/results", exist_ok=True)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -588,7 +570,7 @@ class BenchmarkRunner:
         print("=" * 60)
         
         for project_name in PROJECTS.keys():
-            proj_results = [r for r in self.results if r.project == project_name]
+            proj_results = [r for r in self.results if r.project == os.path.basename(PROJECTS[project_name])]
             if not proj_results:
                 continue
                 
@@ -619,7 +601,8 @@ class BenchmarkRunner:
                 for task in TASKS[project_name]:
                     w_tokens = [r.tokens_out for r in without if r.task_id == task["id"]]
                     a_tokens = [r.tokens_out for r in with_atlas if r.task_id == task["id"]]
-                    if w_tokens and a_tokens:
+                    all_correct = all(r.correct for r in without + with_atlas if r.task_id == task["id"])
+                    if w_tokens and a_tokens and all_correct:
                         w_med = statistics.median(w_tokens)
                         a_med = statistics.median(a_tokens)
                         if w_med > 0:
@@ -628,11 +611,8 @@ class BenchmarkRunner:
                             
                 if savings:
                     avg_saving = statistics.mean(savings)
-                    print(f"  Token savings: {avg_saving:.1f}% (target: >=40%)")
-                    if avg_saving >= 40:
-                        print("  ✅ TARGET MET")
-                    else:
-                        print("  ❌ TARGET NOT MET")
+                    print(f"  Token savings: {avg_saving:.1f}% по {len(savings)} из {len(TASKS[project_name])} задач (только с верным ответом)")
+        print("\nЭто симуляция без реальной модели: гейт ТЗ (раздел 14) ею не проверяется.")
 
 def main():
     runs = int(sys.argv[1]) if len(sys.argv) > 1 else 3

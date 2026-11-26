@@ -1,5 +1,6 @@
 use anyhow::{bail, Context, Result};
 use atlas_core::filter::{filter_output, FilterOptions};
+use atlas_core::report::{report_json, ReportGenerator, ReportOptions};
 use atlas_indexer::{FileWatcher, IncrementalUpdater, ProjectIndexer, WatchEvent};
 use atlas_mcp::{McpConfig, McpServer, Transport};
 use atlas_store::Store;
@@ -151,38 +152,43 @@ fn main() -> Result<()> {
                 std::process::exit(1);
             }
         }
-        Commands::Settings { command } => {
-            let (project, key, value) = match command {
-                SettingsCommand::Get { key, project } => (project, Some(key), None),
-                SettingsCommand::Set { key, value, project } => (project, Some(key), Some(value)),
-                SettingsCommand::All { project } => (project, None, None),
-            };
-            let root = project_root(project.as_deref())?;
-            let store = open_store(&root)?;
-            if let Some(key) = key {
-                if let Some(value) = value {
-                    store.set_setting(&key, &value)?;
-                    println!("OK");
-                } else {
-                    let value = store.get_setting(&key)?;
-                    println!("{}", value.unwrap_or_default());
-                }
-            } else {
-                let settings = store.all_settings()?;
-                let json = serde_json::to_string_pretty(&settings)?;
-                println!("{}", json);
+        Commands::Settings { command } => match command {
+            SettingsCommand::Get { key, project } => {
+                let store = open_store(&project_root(project.as_deref())?)?;
+                println!("{}", store.get_setting(&key)?.unwrap_or_else(|| "null".into()));
             }
-        }
+            SettingsCommand::Set { key, value, project } => {
+                serde_json::from_str::<serde_json::Value>(&value)
+                    .with_context(|| format!("значение должно быть JSON, получено: {value}"))?;
+                let store = open_store(&project_root(project.as_deref())?)?;
+                store.set_setting(&key, &value)?;
+                println!("OK");
+            }
+            SettingsCommand::All { project } => {
+                let store = open_store(&project_root(project.as_deref())?)?;
+                let settings: serde_json::Map<String, serde_json::Value> = store
+                    .all_settings()?
+                    .into_iter()
+                    .map(|(k, v)| {
+                        let value = serde_json::from_str(&v).unwrap_or(serde_json::Value::String(v));
+                        (k, value)
+                    })
+                    .collect();
+                println!("{}", serde_json::to_string_pretty(&settings)?);
+            }
+        },
         Commands::Report { project, format } => {
             let root = project_root(project.as_deref())?;
             let store = open_store(&root)?;
-            let output = if format == "markdown" || format == "md" {
-                atlas_core::report::render_markdown(&store, &root.to_string_lossy())?
-            } else {
-                let report = atlas_core::report::generate_report(&store, &root.to_string_lossy())?;
-                serde_json::to_string_pretty(&report)?
-            };
-            println!("{}", output);
+            let root = root.to_string_lossy();
+            match format.as_str() {
+                "markdown" | "md" => {
+                    let options = ReportOptions { project_root: root.to_string(), ..Default::default() };
+                    println!("{}", ReportGenerator::new(options).generate(&store)?);
+                }
+                "json" => println!("{}", serde_json::to_string_pretty(&report_json(&store, &root)?)?),
+                other => bail!("неизвестный формат «{other}»: json или markdown"),
+            }
         }
     }
 

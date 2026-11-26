@@ -132,7 +132,11 @@ impl<'a> ProjectIndexer<'a> {
             let character = 0;
 
             // Получаем входящие вызовы (кто вызывает эту функцию)
-            if let Ok(incoming) = lsp_client.incoming_calls(path, line, character).await {
+            let Ok(incoming) = lsp_client.incoming_calls(path, line, character).await else {
+                warn!("LSP не отвечает, дополнение графа остановлено");
+                break;
+            };
+            {
                 for inc in incoming {
                     if let Some(dst_id) = self.find_symbol_id(&inc.callee_path, &inc.callee) {
                         if let Some(caller_id) = self.find_symbol_id(&inc.caller_path, &inc.caller) {
@@ -186,8 +190,11 @@ impl<'a> ProjectIndexer<'a> {
         
         // Инициализируем LSP-клиенты асинхронно
         let rt = tokio::runtime::Runtime::new()?;
-        if let Err(e) = rt.block_on(self.init_lsp_clients()) {
-            warn!("Failed to initialize LSP clients: {}", e);
+        // LSP экспериментален и запускает внешние программы, поэтому только по явной просьбе
+        if std::env::var("ATLAS_LSP").is_ok_and(|v| v == "1") {
+            if let Err(e) = rt.block_on(self.init_lsp_clients()) {
+                warn!("Failed to initialize LSP clients: {}", e);
+            }
         }
         
         self.upsert_project_record()?;

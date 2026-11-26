@@ -1,10 +1,11 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { Search, FileText, Zap, Type, File, Folder, Function, Interface, Class, Copy } from 'lucide-react'
+import { Search, FileText, Zap, Type, File, Folder, FunctionSquare, Component, Box, Copy } from 'lucide-react'
 import type { SearchResult, GraphNode } from '../types'
 
 interface CommandPaletteProps {
   projectPath: string
   isOpen: boolean
+  initialMode: 'files' | 'symbols' | 'commands'
   onClose: () => void
   onSelectFile: (path: string) => void
   onSelectSymbol: (symbol: SearchResult) => void
@@ -26,6 +27,7 @@ interface CommandItem {
 export default function CommandPalette({
   projectPath,
   isOpen,
+  initialMode,
   onClose,
   onSelectFile,
   onSelectSymbol,
@@ -71,12 +73,18 @@ export default function CommandPalette({
     if (isOpen) {
       setTimeout(() => inputRef.current?.focus(), 0)
       setSelectedIndex(0)
+      setMode(initialMode)
+      setQuery('')
     }
-  }, [isOpen])
+  }, [isOpen, initialMode])
 
   // Поиск при изменении запроса
   useEffect(() => {
     if (!isOpen || !projectPath || !window.atlasAPI) return
+
+    // список и выбор от прошлого запроса не должны срабатывать по Enter
+    setSelectedIndex(0)
+    if (mode === 'symbols' && query.length < 2) setItems([])
 
     const search = async () => {
       if (mode === 'files') {
@@ -140,7 +148,6 @@ export default function CommandPalette({
             description: 'Полная переиндексация (atlas index)',
             icon: <Zap className="w-4 h-4" />,
             action: () => { onRunCommand('index'); onClose(); },
-            shortcut: 'Ctrl+I',
           },
           {
             id: 'cmd-watch',
@@ -149,7 +156,6 @@ export default function CommandPalette({
             description: 'Автоиндексация при изменениях (atlas watch)',
             icon: <Zap className="w-4 h-4" />,
             action: () => { onRunCommand('watch'); onClose(); },
-            shortcut: 'Ctrl+W',
           },
           {
             id: 'cmd-doctor',
@@ -158,7 +164,6 @@ export default function CommandPalette({
             description: 'Диагностика индекса и БД',
             icon: <Search className="w-4 h-4" />,
             action: () => { onRunCommand('doctor'); onClose(); },
-            shortcut: 'Ctrl+D',
           },
           {
             id: 'cmd-export-json',
@@ -247,7 +252,7 @@ export default function CommandPalette({
                 }`}
               >
                 {m === 'files' && <FileText className="w-3 h-3 mr-1" />}
-                {m === 'symbols' && <Function className="w-3 h-3 mr-1" />}
+                {m === 'symbols' && <FunctionSquare className="w-3 h-3 mr-1" />}
                 {m === 'commands' && <Zap className="w-3 h-3 mr-1" />}
                 {modeLabels[m]}
               </button>
@@ -314,10 +319,10 @@ export default function CommandPalette({
 
 function getSymbolIcon(kind: string): React.ReactNode {
   switch (kind) {
-    case 'function': return <Function className="w-4 h-4 text-yellow-500" />
-    case 'method': return <Function className="w-4 h-4 text-blue-500" />
-    case 'class': return <Class className="w-4 h-4 text-purple-500" />
-    case 'interface': return <Interface className="w-4 h-4 text-cyan-500" />
+    case 'function': return <FunctionSquare className="w-4 h-4 text-yellow-500" />
+    case 'method': return <FunctionSquare className="w-4 h-4 text-blue-500" />
+    case 'class': return <Box className="w-4 h-4 text-purple-500" />
+    case 'interface': return <Component className="w-4 h-4 text-cyan-500" />
     case 'type': return <Type className="w-4 h-4 text-orange-500" />
     case 'constant': return <Zap className="w-4 h-4 text-red-500" />
     case 'module': return <Folder className="w-4 h-4 text-gray-500" />

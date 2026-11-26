@@ -35,7 +35,6 @@ impl ReportGenerator {
         Self { options }
     }
 
-    /// Генерирует отчёт в Markdown (public API для CLI).
     pub fn generate(&self, store: &Store) -> anyhow::Result<String> {
         let root = std::path::Path::new(&self.options.project_root);
         let name = root
@@ -93,7 +92,8 @@ impl ReportGenerator {
         self.write_ai_usage(&mut out, store)?;
         self.write_problems(&mut out, &files, &symbols, &edges)?;
 
-        Ok(limit_tokens(out, self.options.max_tokens))
+        // README и сигнатуры могут содержать секреты
+        Ok(crate::secrets::mask_text(&limit_tokens(out, self.options.max_tokens)))
     }
 
     fn write_structure(&self, out: &mut String, files: &[atlas_store::Node]) -> anyhow::Result<()> {
@@ -133,9 +133,6 @@ impl ReportGenerator {
         writeln!(out, "## Ключевые модули и точки входа\n")?;
         // files уже отсортированы по рангу
         for f in files.iter().take(10) {
-            if f.rank <= 0.0 && files.iter().take(10).all(|x| x.rank <= 0.0) {
-                // если рангов нет, показываем по алфавиту
-            }
             let count = symbols.iter().filter(|s| s.path == f.path).count();
             writeln!(
                 out,
@@ -284,7 +281,16 @@ impl ReportGenerator {
 
 fn read_readme(root: &std::path::Path) -> Option<String> {
     for name in ["README.md", "README", "readme.md"] {
-        if let Ok(text) = std::fs::read_to_string(root.join(name)) {
+        // README не должен быть ссылкой на закрытый файл или за пределы проекта
+        let Ok((base, file)) = root.canonicalize().and_then(|b| Ok((b, root.join(name).canonicalize()?))) else {
+            continue;
+        };
+        let Ok(inside) = file.strip_prefix(&base) else { continue };
+        if crate::secrets::is_closed_path(&inside.to_string_lossy()) {
+            continue;
+        }
+        if let Ok(raw) = std::fs::read_to_string(&file) {
+            let text = crate::secrets::mask_lines(raw.lines(), true).join("\n");
             let mut excerpt = String::new();
             let mut chars = 0;
             for line in text.lines() {
@@ -378,6 +384,60 @@ fn limit_tokens(text: String, max_tokens: usize) -> String {
     format!("{cut}\n\n[отчёт обрезан по лимиту {max_tokens} токенов]\n")
 }
 
+/// Структурированный отчёт для `report --format json` и интерфейса.
+pub fn report_json(store: &Store, project_root: &str) -> anyhow::Result<serde_json::Value> {
+    use serde_json::json;
+
+    let nodes = store.get_all_nodes()?;
+    let edges = store.get_all_edges()?;
+    let files = nodes.iter().filter(|n| n.kind == NodeKind::File).count();
+    let mut languages: BTreeMap<String, usize> = BTreeMap::new();
+    for f in nodes.iter().filter(|n| n.kind == NodeKind::File) {
+        *languages.entry(f.lang.clone().unwrap_or_else(|| "other".into())).or_default() += 1;
+    }
+    let mut symbols: Vec<_> = nodes
+        .iter()
+        .filter(|n| !matches!(n.kind, NodeKind::File | NodeKind::Dir))
+        .collect();
+    symbols.sort_by(|a, b| b.rank.total_cmp(&a.rank).then_with(|| a.path.cmp(&b.path)));
+    let calls: Vec<_> = edges.iter().filter(|e| e.kind == EdgeKind::Calls).take(500).collect();
+    let used: HashSet<uuid::Uuid> = calls.iter().flat_map(|e| [e.src_id, e.dst_id]).collect();
+    let by_tool = store.call_log_summary()?;
+
+    Ok(json!({
+        "project": {
+            "root": project_root,
+            "generated_at": chrono::Utc::now().to_rfc3339(),
+            "files": files,
+            "symbols": symbols.len(),
+            "languages": languages,
+        },
+        "index_stats": {
+            "nodes_by_kind": store.count_by_kind()?.into_iter().collect::<BTreeMap<_, _>>(),
+            "edges_by_kind": store.count_edges_by_kind()?.into_iter().collect::<BTreeMap<_, _>>(),
+            "total_nodes": nodes.len(),
+            "total_edges": edges.len(),
+        },
+        "top_symbols": symbols.iter().take(50).map(|s| json!({
+            "name": s.name, "kind": s.kind.to_string(), "path": s.path, "rank": s.rank,
+            "tokens_est": s.tokens_est, "line_start": s.line_start, "line_end": s.line_end,
+        })).collect::<Vec<_>>(),
+        "call_graph": {
+            "nodes": nodes.iter().filter(|n| used.contains(&n.id)).map(|n| json!({
+                "id": n.id.to_string(), "name": n.name, "kind": n.kind.to_string(), "path": n.path, "rank": n.rank,
+            })).collect::<Vec<_>>(),
+            "edges": calls.iter().map(|e| json!({
+                "source": e.src_id.to_string(), "target": e.dst_id.to_string(),
+                "kind": e.kind.to_string(), "confidence": e.confidence.to_string(),
+            })).collect::<Vec<_>>(),
+        },
+        "token_usage": {
+            "calls": by_tool.iter().map(|(_, n, _)| n).sum::<i64>(),
+            "tokens_out": by_tool.iter().map(|(_, _, t)| t).sum::<i64>(),
+        },
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -443,19 +503,4 @@ mod tests {
         assert!(!cycles.is_empty());
         assert!(cycles[0].contains(&"a".to_string()));
     }
-}
-
-/// Публичный API для CLI: генерация отчёта в Markdown.
-pub fn generate_report(store: &Store, project_root: &str) -> anyhow::Result<String> {
-    let options = ReportOptions {
-        project_root: project_root.to_string(),
-        ..Default::default()
-    };
-    ReportGenerator::new(options).generate(store)
-}
-
-/// Публичный API для CLI: рендеринг Markdown (уже делается внутри generate_report,
-/// но экспортируется для тестов/других форматов).
-pub fn render_markdown(store: &Store, project_root: &str) -> anyhow::Result<String> {
-    generate_report(store, project_root)
 }

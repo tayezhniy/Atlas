@@ -15,6 +15,7 @@ import {
   AlertCircle,
   CheckCircle,
   X,
+  File,
   ChevronLeft,
   ChevronRight,
 } from 'lucide-react'
@@ -26,7 +27,7 @@ import TokenPanel from './components/TokenPanel'
 import CommandPalette from './components/CommandPalette'
 import SettingsPanel from './components/Settings'
 import ReportExport from './components/ReportExport'
-import type { GraphNode, ProjectOverview, SearchResult } from './types'
+import type { GraphNode, ProjectOverview } from './types'
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<'graph' | 'file' | 'map' | 'report'>('graph')
@@ -36,18 +37,19 @@ export default function App() {
   const [projects, setProjects] = useState<string[]>([])
   const [activeProject, setActiveProject] = useState<string | null>(null)
   const [indexing, setIndexing] = useState(false)
-  const [indexed, setIndexed] = useState(false)
   const [overview, setOverview] = useState<ProjectOverview | null>(null)
   const [graphNodes, setGraphNodes] = useState<GraphNode[]>([])
-  const [graphEdges, setGraphEdges] = useState<Array<{ source: string; target: string }>>([])
+  const [graphEdges, setGraphEdges] = useState<ProjectOverview['edges']>([])
   const [error, setError] = useState<string | null>(null)
   const [status, setStatus] = useState<'idle' | 'indexing' | 'ready' | 'error'>('idle')
   const [recentFiles, setRecentFiles] = useState<string[]>([])
 
   // Модальные окна
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false)
+  const [paletteMode, setPaletteMode] = useState<'files' | 'symbols' | 'commands'>('files')
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [reportExportOpen, setReportExportOpen] = useState(false)
+  const [reportFormat, setReportFormat] = useState<'json' | 'markdown'>('markdown')
 
   const tabs = [
     { id: 'graph' as const, label: 'Граф', icon: <Activity className="w-4 h-4" /> },
@@ -66,16 +68,19 @@ export default function App() {
       // Ctrl+P - поиск файлов
       if ((e.ctrlKey || e.metaKey) && e.key === 'p' && !e.shiftKey) {
         e.preventDefault()
+        setPaletteMode('files')
         setCommandPaletteOpen(true)
       }
       // Ctrl+Shift+F - поиск символов
-      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'f') {
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 'f') {
         e.preventDefault()
+        setPaletteMode('symbols')
         setCommandPaletteOpen(true)
       }
       // Ctrl+K - команды
       if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
         e.preventDefault()
+        setPaletteMode('commands')
         setCommandPaletteOpen(true)
       }
       // Ctrl+, - настройки
@@ -89,7 +94,7 @@ export default function App() {
         setSidebarOpen(v => !v)
       }
       // Ctrl+Shift+B - переключение правой боковой панели
-      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'b') {
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 'b') {
         e.preventDefault()
         setRightSidebarOpen(v => !v)
       }
@@ -104,105 +109,72 @@ export default function App() {
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [])
 
+  const loadOverview = useCallback(async (projectPath: string) => {
+    const ov = await window.atlasAPI.overview(projectPath)
+    setOverview(ov)
+    setGraphNodes(ov.top)
+    setGraphEdges(ov.edges)
+  }, [])
+
   const handleOpenProject = useCallback(async (projectPath: string) => {
     if (!window.atlasAPI) return
     setError(null)
     setStatus('indexing')
+    setSelectedNode(null)
     try {
       await window.atlasAPI.openProject(projectPath)
       setProjects(prev => (prev.includes(projectPath) ? prev : [...prev, projectPath]))
       setActiveProject(projectPath)
-      setIndexed(true)
       await loadOverview(projectPath)
       setStatus('ready')
-      // Добавляем в недавние файлы
-      setRecentFiles(prev => [projectPath, ...prev.filter(p => p !== projectPath)].slice(0, 10))
+      setRecentFiles([])
     } catch (err: any) {
       setError(err.message || 'Не удалось открыть проект')
       setStatus('error')
     }
-  }, [])
+  }, [loadOverview])
+
+  const handleChooseProject = useCallback(async () => {
+    const path = await window.atlasAPI?.chooseProject()
+    if (path) await handleOpenProject(path)
+  }, [handleOpenProject])
 
   const handleIndexProject = useCallback(async () => {
     if (!activeProject || !window.atlasAPI) return
     setIndexing(true)
     setError(null)
     try {
-      const out = await window.atlasAPI.indexProject(activeProject)
-      setIndexed(true)
+      await window.atlasAPI.indexProject(activeProject)
       await loadOverview(activeProject)
+      setStatus('ready')
     } catch (err: any) {
       setError(err.message || 'Ошибка индексации')
       setStatus('error')
     } finally {
       setIndexing(false)
     }
-  }, [activeProject])
+  }, [activeProject, loadOverview])
 
-  const loadOverview = useCallback(async (projectPath: string) => {
-    if (!window.atlasAPI) return
-    try {
-      const ov = await window.atlasAPI.overview(projectPath)
-      setOverview(ov)
-      const nodes: GraphNode[] = ov.top.map((n) => ({
-        id: n.path,
-        name: n.name,
-        kind: 'file',
-        path: n.path,
-        rank: n.rank,
-        tokens_est: n.tokens_est,
-      }))
-      setGraphNodes(nodes)
-      setGraphEdges([])
-    } catch (_) {
-      // обзор недоступен
-    }
+  const handleNodeSelect = useCallback((nodeId: string) => {
+    setSelectedNode(nodeId)
+    setRecentFiles(prev => [nodeId.split('::')[0], ...prev.filter(p => p !== nodeId.split('::')[0])].slice(0, 10))
+    setActiveTab('file')
   }, [])
 
-  const handleSearch = useCallback(async (query: string) => {
-    if (!activeProject || !window.atlasAPI || !query.trim()) return
-    try {
-      const res = await window.atlasAPI.search({
-        projectPath: activeProject,
-        query,
-        limit: 20,
-      })
-      setSearchResults(res.items)
-    } catch (err: any) {
-      setError(err.message || 'Ошибка поиска')
-    }
-  }, [activeProject])
-
-  const [searchResults, setSearchResults] = useState<SearchResult[]>([])
-
-  const handleNodeSelect = useCallback((nodeId: string | null, nodeType?: 'file' | 'symbol') => {
-    setSelectedNode(nodeId)
-    if (nodeId && activeTab !== 'file') setActiveTab('file')
-  }, [activeTab])
-
   const handleGraphHighlight = useCallback((nodeId: string) => {
-    // Граф сам обработает подсветку через selectedNode
     setSelectedNode(nodeId)
-    if (activeTab !== 'graph') setActiveTab('graph')
-  }, [activeTab])
+    setActiveTab('graph')
+  }, [])
 
-  const handleGoToDefinition = useCallback((symbol: string, path?: string) => {
+  const handleGoToDefinition = useCallback((symbol: string) => {
     if (!activeProject || !window.atlasAPI) return
-    // Ищем символ через search
-    window.atlasAPI.search({ projectPath: activeProject, query: symbol, limit: 5 })
+    window.atlasAPI.search({ projectPath: activeProject, query: symbol, limit: 10 })
       .then(res => {
-        if (res.items.length > 0) {
-          const match = path
-            ? res.items.find(i => i.path === path)
-            : res.items[0]
-          if (match) {
-            const symbolId = `${match.path}::${match.name}`
-            setSelectedNode(symbolId)
-            setActiveTab('file')
-          }
-        }
+        const match = res.items.find(i => i.name === symbol && i.kind !== 'file')
+        if (match) handleNodeSelect(`${match.path}::${match.name}`)
       })
-  }, [activeProject])
+      .catch(err => setError(err.message))
+  }, [activeProject, handleNodeSelect])
 
   const handleCommand = useCallback((command: string) => {
     switch (command) {
@@ -210,24 +182,17 @@ export default function App() {
         handleIndexProject()
         break
       case 'watch':
-        if (activeProject && window.atlasAPI) {
-          // Запускаем watch через CLI (нужно добавить в API)
-        }
+        if (activeProject) window.atlasAPI?.watch(activeProject).catch(err => setError(err.message))
         break
       case 'doctor':
-        if (activeProject && window.atlasAPI) {
-          window.atlasAPI.doctor(activeProject).then(r => {
-            alert(r.output || JSON.stringify(r.result))
-          })
+        if (activeProject) {
+          window.atlasAPI?.doctor(activeProject).then(r => alert(r.output)).catch(err => setError(err.message))
         }
         break
       case 'export-json':
-        setReportExportOpen(true)
-        // Формат JSON будет выбран по умолчанию
-        break
       case 'export-md':
+        setReportFormat(command === 'export-json' ? 'json' : 'markdown')
         setReportExportOpen(true)
-        // Переключим на markdown после открытия
         break
       case 'settings':
         setSettingsOpen(true)
@@ -235,10 +200,16 @@ export default function App() {
     }
   }, [activeProject, handleIndexProject])
 
+  const copyClientConfig = async () => {
+    if (!activeProject) return
+    await navigator.clipboard.writeText(await window.atlasAPI.mcpConfig(activeProject))
+    alert('Конфигурация MCP-сервера скопирована. Добавьте её в настройки клиента.')
+  }
+
   return (
-    <div className="atlas-app h-screen flex flex-col bg-background text-foreground">
+    <div className="atlas-app h-full overflow-hidden flex flex-col bg-background text-foreground">
       {/* Верхняя панель */}
-      <header className="h-12 border-b bg-background/50 flex items-center justify-between px-4">
+      <header className="h-12 shrink-0 border-b bg-background/50 flex items-center justify-between gap-2 px-4 overflow-hidden whitespace-nowrap">
         <div className="flex items-center gap-4">
           <div className="flex items-center gap-2">
             <div className="w-6 h-6 rounded bg-blue-500 flex items-center justify-center">
@@ -248,10 +219,9 @@ export default function App() {
           </div>
 
           {/* Переключатель проектов */}
-          <div className="flex items-center gap-2 ml-6">
-            <label className="text-xs text-muted-foreground">Проект:</label>
-            <select
-              className="border rounded px-2 py-1 text-xs bg-input"
+          <div className="flex items-center gap-2 ml-2">
+                        <select
+              className="border rounded px-2 py-1 text-xs bg-input w-40"
               value={activeProject ?? ''}
               onChange={(e) => {
                 const p = e.target.value
@@ -263,10 +233,13 @@ export default function App() {
                 <option key={p} value={p}>{p}</option>
               ))}
             </select>
+            <button className="px-3 py-1 rounded border hover:bg-accent text-xs" onClick={handleChooseProject}>
+              Открыть папку…
+            </button>
           </div>
 
           {activeProject && (
-            <div className="flex items-center gap-2 ml-6">
+            <div className="flex items-center gap-2 ml-2">
               <button
                 className="flex items-center gap-2 px-3 py-1.5 rounded border hover:bg-accent text-xs disabled:opacity-50"
                 onClick={handleIndexProject}
@@ -284,12 +257,12 @@ export default function App() {
               </button>
               <button
                 className="flex items-center gap-2 px-3 py-1.5 rounded border hover:bg-accent text-xs"
-                onClick={() => setCommandPaletteOpen(true)}
+                onClick={() => { setPaletteMode('files'); setCommandPaletteOpen(true) }}
               >
                 <Search className="w-3 h-3" />
                 Поиск (Ctrl+P)
               </button>
-              <button className="flex items-center gap-2 px-3 py-1.5 rounded border hover:bg-accent text-xs">
+              <button className="flex items-center gap-2 px-3 py-1.5 rounded border hover:bg-accent text-xs" onClick={copyClientConfig}>
                 <Copy className="w-3 h-3" />
                 Подключить клиент
               </button>
@@ -304,7 +277,7 @@ export default function App() {
           )}
 
           {!activeProject && (
-            <div className="flex items-center gap-2 ml-6 text-xs text-muted-foreground">
+            <div className="flex items-center gap-2 ml-2 text-xs text-muted-foreground">
               <AlertCircle className="w-3 h-3" />
               Проект не выбран
             </div>
@@ -321,7 +294,7 @@ export default function App() {
           {status === 'ready' && (
             <div className="flex items-center gap-1 px-2 py-1 rounded bg-green-500/10 border border-green-500/20 text-[10px]">
               <span className="w-1.5 h-1.5 rounded-full bg-green-500"></span>
-              Индекс: fresh
+              Индекс готов
             </div>
           )}
           {status === 'error' && (
@@ -332,7 +305,7 @@ export default function App() {
           )}
           {overview && (
             <div className="text-xs text-muted-foreground">
-              {overview.files} файлов, {overview.top.length} символов
+              {overview.files} файлов, {overview.symbols} символов
             </div>
           )}
           <button
@@ -399,11 +372,11 @@ export default function App() {
                 edges={graphEdges}
                 selectedNode={selectedNode}
                 onNodeClick={handleNodeSelect}
-                onNodeDoubleClick={(nodeId) => { handleNodeSelect(nodeId); setActiveTab('file'); }}
               />
             )}
             {activeTab === 'file' && selectedNode && (
               <FileView
+                key={`${activeProject}:${selectedNode}`}
                 projectPath={activeProject ?? ''}
                 nodeId={selectedNode}
                 onGoToDefinition={handleGoToDefinition}
@@ -430,7 +403,7 @@ export default function App() {
                   <div className="space-y-1 text-xs">
                     {overview.top.map((n) => (
                       <div key={n.path} className="flex items-center justify-between px-3 py-1 bg-muted/50 rounded cursor-pointer hover:bg-muted"
-                        onClick={() => { handleNodeSelect(n.path); setActiveTab('file'); }}>
+                        onClick={() => handleNodeSelect(n.path)}>
                         <span className="font-mono truncate">{n.path}</span>
                         <span className="text-muted-foreground">~{n.tokens_est ?? 0} ток.</span>
                       </div>
@@ -488,7 +461,7 @@ export default function App() {
                 </div>
               </div>
             )}
-            <TokenPanel projectPath={activeProject ?? ''} overview={overview} />
+            <TokenPanel projectPath={activeProject ?? ''} />
             <button
               onClick={() => setRightSidebarOpen(false)}
               className="p-2 mx-3 mb-2 rounded hover:bg-muted text-muted-foreground self-end"
@@ -513,33 +486,20 @@ export default function App() {
       </div>
 
       {/* Статусная строка */}
-      <footer className="h-8 border-t bg-muted/50 flex items-center justify-between px-4 text-[10px] text-muted-foreground">
-        <div className="flex items-center gap-4">
-          <span>
-            Индекс: {status === 'ready' ? 'fresh' : 'пуст'} ·
-            {overview?.files ?? 0} файлов ·
-            {overview?.top.length ?? 0} символов
-          </span>
-          <span>MCP-клиенты: 0</span>
-          <span>Сессия: {status}</span>
-        </div>
-        <div className="flex items-center gap-4">
-          <span>Токенов за сессию: 0</span>
-          <span>Экономия: 0%</span>
-        </div>
+      <footer className="h-8 border-t bg-muted/50 flex items-center px-4 text-[10px] text-muted-foreground">
+        <span>
+          {overview ? `${overview.files} файлов · ${overview.symbols} символов` : 'Проект не открыт'}
+        </span>
       </footer>
 
       {/* Модальные окна */}
       <CommandPalette
         projectPath={activeProject ?? ''}
         isOpen={commandPaletteOpen}
+        initialMode={paletteMode}
         onClose={() => setCommandPaletteOpen(false)}
-        onSelectFile={(path) => { handleNodeSelect(path, 'file'); setActiveTab('file'); }}
-        onSelectSymbol={(symbol) => {
-          const symbolId = `${symbol.path}::${symbol.name}`
-          handleNodeSelect(symbolId, 'symbol')
-          setActiveTab('file')
-        }}
+        onSelectFile={handleNodeSelect}
+        onSelectSymbol={(symbol) => handleNodeSelect(`${symbol.path}::${symbol.name}`)}
         onRunCommand={handleCommand}
         recentFiles={recentFiles}
       />
@@ -552,9 +512,8 @@ export default function App() {
 
       <ReportExport
         projectPath={activeProject ?? ''}
-        overview={overview}
-        graphNodes={graphNodes}
         isOpen={reportExportOpen}
+        initialFormat={reportFormat}
         onClose={() => setReportExportOpen(false)}
       />
     </div>
