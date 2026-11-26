@@ -55,8 +55,6 @@ const DEFAULT_CLOSED_PATHS = [
   '*.p12',
   '*.pfx',
   '*.keystore',
-  '**/credentials/**',
-  '**/secrets.*',
 ]
 
 export default function Settings({ projectPath, isOpen, onClose }: SettingsProps) {
@@ -332,8 +330,8 @@ export default function Settings({ projectPath, isOpen, onClose }: SettingsProps
               <div className="space-y-4">
                 <h3 className="font-medium">Закрытые пути (секреты)</h3>
                 <p className="text-xs text-muted-foreground">
-                  Встроенный список закрытых путей действует всегда. Свои паттерны пока только сохраняются
-                  и на ответы MCP не влияют.
+                  Встроенный список закрытых путей действует всегда. Содержимое, сигнатуры и документация файлов
+                  по вашим паттернам не отдаются; имена файлов и символов остаются видны.
                 </p>
                 <div className="flex gap-2 mb-3">
                   <input

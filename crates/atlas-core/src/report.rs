@@ -36,6 +36,7 @@ impl ReportGenerator {
     }
 
     pub fn generate(&self, store: &Store) -> anyhow::Result<String> {
+        store.load_closed_paths()?;
         let root = std::path::Path::new(&self.options.project_root);
         let name = root
             .file_name()
@@ -61,7 +62,7 @@ impl ReportGenerator {
             indexed_at
         )?;
         writeln!(out, "## Что это за проект\n")?;
-        match read_readme(root) {
+        match read_readme(store, root) {
             Some(text) => writeln!(out, "{text}\n")?,
             None => writeln!(out, "README не найден; описание построено по индексу.\n")?,
         }
@@ -297,7 +298,7 @@ impl ReportGenerator {
     }
 }
 
-fn read_readme(root: &std::path::Path) -> Option<String> {
+fn read_readme(store: &Store, root: &std::path::Path) -> Option<String> {
     for name in ["README.md", "README", "readme.md"] {
         // README не должен быть ссылкой на закрытый файл или за пределы проекта
         let Ok((base, file)) = root
@@ -309,7 +310,9 @@ fn read_readme(root: &std::path::Path) -> Option<String> {
         let Ok(inside) = file.strip_prefix(&base) else {
             continue;
         };
-        if crate::secrets::is_closed_path(&inside.to_string_lossy()) {
+        if crate::secrets::is_closed_path(&inside.to_string_lossy())
+            || store.is_user_closed(&inside.to_string_lossy())
+        {
             continue;
         }
         if let Ok(raw) = std::fs::read_to_string(&file) {
@@ -416,6 +419,7 @@ fn limit_tokens(text: String, max_tokens: usize) -> String {
 
 /// Структурированный отчёт для `report --format json` и интерфейса.
 pub fn report_json(store: &Store, project_root: &str) -> anyhow::Result<serde_json::Value> {
+    store.load_closed_paths()?;
     use serde_json::json;
 
     let nodes = store.get_all_nodes()?;
@@ -476,6 +480,7 @@ pub fn report_json(store: &Store, project_root: &str) -> anyhow::Result<serde_js
 
 /// Генерация отчёта в HTML.
 pub fn report_html(store: &Store, project_root: &str) -> anyhow::Result<String> {
+    store.load_closed_paths()?;
     let nodes = store.get_all_nodes()?;
     let edges = store.get_all_edges()?;
     let file_nodes: Vec<_> = nodes.iter().filter(|n| n.kind == NodeKind::File).collect();
@@ -553,7 +558,7 @@ pub fn report_html(store: &Store, project_root: &str) -> anyhow::Result<String> 
     ));
 
     // README
-    let readme = read_readme(std::path::Path::new(project_root))
+    let readme = read_readme(store, std::path::Path::new(project_root))
         .map(|s| html_escape(&s))
         .unwrap_or_else(|| "README не найден; описание построено по индексу.".to_string());
     out.push_str(&format!(
@@ -806,16 +811,16 @@ pub fn report_html(store: &Store, project_root: &str) -> anyhow::Result<String> 
 }
 
 /// HTML-экранирование для безопасной вставки в HTML.
+/// Сущности собраны из частей: один раз редактор уже превратил их обратно в символы.
 fn html_escape(text: &str) -> String {
-    const AMP: &str = "&";
     let mut out = String::with_capacity(text.len() + 16);
     for ch in text.chars() {
         match ch {
-            '<' => out.push('<'),
-            '>' => out.push('>'),
-            '"' => out.push_str("&#34;"),
-            '\'' => out.push_str("&apos;"),
-            '&' => out.push_str(AMP),
+            '&' => out.push_str(concat!("&", "amp;")),
+            '<' => out.push_str(concat!("&", "lt;")),
+            '>' => out.push_str(concat!("&", "gt;")),
+            '"' => out.push_str(concat!("&", "#34;")),
+            '\'' => out.push_str(concat!("&", "#39;")),
             _ => out.push(ch),
         }
     }
@@ -886,5 +891,20 @@ mod tests {
         let cycles = find_cycles(&graph);
         assert!(!cycles.is_empty());
         assert!(cycles[0].contains(&"a".to_string()));
+    }
+
+    #[test]
+    fn html_report_escapes_project_data() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("README.md"),
+            "<script>alert(1)</script> a & b",
+        )
+        .unwrap();
+        let store = Store::open(dir.path().join("test.db")).unwrap();
+        let html = report_html(&store, &dir.path().to_string_lossy()).unwrap();
+        assert!(!html.contains("<script"), "{html}");
+        assert!(html.contains(concat!("&", "lt;script", "&", "gt;")));
+        assert!(html.contains(concat!("a ", "&", "amp; b")));
     }
 }

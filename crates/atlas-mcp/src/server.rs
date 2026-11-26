@@ -16,8 +16,6 @@ pub struct McpConfig {
     pub budget_default: usize,
     /// Бюджеты токенов на инструмент (из настроек проекта).
     pub tool_budgets: HashMap<String, usize>,
-    /// Закрытые пути для секретов (из настроек проекта).
-    pub closed_paths: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -34,7 +32,6 @@ impl Default for McpConfig {
             // 0 = без общего потолка: у каждого инструмента свой бюджет по умолчанию
             budget_default: 0,
             tool_budgets: HashMap::new(),
-            closed_paths: Vec::new(),
         }
     }
 }
@@ -51,17 +48,12 @@ impl McpServer {
     pub fn new(config: McpConfig, store: Store, project_root: String) -> Self {
         // Загружаем настройки проекта
         let mut tool_budgets = config.tool_budgets.clone();
-        let mut closed_paths = config.closed_paths.clone();
 
         if let Ok(settings) = store.all_settings() {
             for (key, value) in settings {
                 if key == "budgets" {
                     if let Ok(budgets) = serde_json::from_str::<HashMap<String, usize>>(&value) {
                         tool_budgets.extend(budgets);
-                    }
-                } else if key == "closedPaths" {
-                    if let Ok(paths) = serde_json::from_str::<Vec<String>>(&value) {
-                        closed_paths.extend(paths);
                     }
                 }
             }
@@ -70,7 +62,6 @@ impl McpServer {
         Self {
             config: McpConfig {
                 tool_budgets,
-                closed_paths,
                 ..config
             },
             registry: ToolRegistry::new(store),
@@ -186,7 +177,6 @@ impl McpServer {
             self.config.budget_default,
             self.project_root.clone(),
             self.config.tool_budgets.clone(),
-            self.config.closed_paths.clone(),
         )
         .with_args(args);
 
@@ -215,6 +205,7 @@ fn error_reply(id: Value, code: i32, message: &str) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tools::Tool;
 
     fn server() -> (tempfile::TempDir, McpServer) {
         let dir = tempfile::tempdir().unwrap();
@@ -297,6 +288,70 @@ mod tests {
             json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"read","arguments":{"symbol":"nope"}}}),
         );
         assert_eq!(bad["result"]["isError"], true);
+    }
+
+    #[test]
+    fn closed_paths_setting_hides_file_contents() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_string_lossy().to_string();
+        std::fs::create_dir(dir.path().join("private")).unwrap();
+        std::fs::write(
+            dir.path().join("private/p.rs"),
+            "pub fn f(x: HiddenType) {}\n",
+        )
+        .unwrap();
+        let store = Store::open(dir.path().join("test.db")).unwrap();
+        let node = atlas_store::schema::Node {
+            id: uuid::Uuid::new_v4(),
+            kind: atlas_store::schema::NodeKind::Function,
+            path: "private/p.rs".into(),
+            name: "f".into(),
+            parent_id: None,
+            lang: Some("rust".into()),
+            hash: None,
+            line_start: Some(1),
+            line_end: Some(1),
+            signature: Some("pub fn f(x: HiddenType)".into()),
+            doc_summary: Some("HiddenDoc".into()),
+            tokens_est: 5,
+            rank: 0.0,
+        };
+        store.upsert_node(&node).unwrap();
+        store
+            .set_setting("closedPaths", r#"["private/**"]"#)
+            .unwrap();
+        let mut registry = ToolRegistry::new(store);
+
+        let args = [
+            (Tool::Read, json!({"path": "private/p.rs"})),
+            (Tool::Read, json!({"symbol": "f", "mode": "signature"})),
+            (Tool::Outline, json!({"path": "private/p.rs"})),
+            (Tool::Search, json!({"query": "f"})),
+            (Tool::ContextFor, json!({"symbol": "f"})),
+        ];
+        for (tool, args) in args {
+            let ctx = crate::tools::ToolContext::new(
+                "s".into(),
+                tool.clone(),
+                0,
+                root.clone(),
+                HashMap::new(),
+            )
+            .with_args(args);
+            let text = match registry.execute(&tool, &ctx) {
+                Ok(result) => result.text,
+                Err(e) => e.to_string(),
+            };
+            assert!(!text.contains("Hidden"), "{}: {text}", tool.name());
+        }
+        for method in ["read", "outline", "neighbors"] {
+            let args = json!({"target": "private/p.rs::f", "path": "private/p.rs"});
+            let text = match registry.ui(&root, method, &args) {
+                Ok(v) => v.to_string(),
+                Err(e) => e.to_string(),
+            };
+            assert!(!text.contains("Hidden"), "{method}: {text}");
+        }
     }
 
     #[test]

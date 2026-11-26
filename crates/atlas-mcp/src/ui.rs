@@ -41,6 +41,7 @@ fn str_arg<'a>(args: &'a Value, key: &str) -> Result<&'a str> {
 
 impl ToolRegistry {
     pub fn ui(&self, project_root: &str, method: &str, args: &Value) -> Result<Value> {
+        self.store.load_closed_paths()?;
         match method {
             "overview" => self.ui_overview(project_root),
             "search" => self.ui_search(args),
@@ -182,7 +183,7 @@ impl ToolRegistry {
         let node = self.ui_node(str_arg(args, "target")?)?;
         let mode = args.get("mode").and_then(Value::as_str).unwrap_or("full");
         // Чтение с диска проверяет закрытые пути для любого режима
-        let file = read_project_lines(project_root, &node.path)?;
+        let file = read_project_lines(&self.store, project_root, &node.path)?;
         let total = file.len();
         let (start, end) = match (node.kind == NodeKind::File, node.line_start, node.line_end) {
             (false, Some(s), Some(e)) => (s.max(1) as usize, (e.max(s) as usize).min(total)),
