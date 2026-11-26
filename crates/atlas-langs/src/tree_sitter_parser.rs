@@ -1014,14 +1014,30 @@ fn extract_imports_c_cpp(node: &tree_sitter::Node, source: &[u8]) -> Result<Vec<
 
 fn extract_imports_dart(node: &tree_sitter::Node, source: &[u8]) -> Result<Vec<Import>> {
     let mut imports = Vec::new();
-    collect_nodes_by_type(node, source, &["import_declaration", "export_declaration"], &mut |n, src| {
-        let text = node_text(n, src).unwrap_or_default();
-        // import 'package:foo/bar.dart';
-        if let Some(path) = text.split("'").nth(1).or_else(|| text.split('"').nth(1)) {
+    // Dart: imports are `import_or_export` -> `library_import` -> `import_specification` -> `configurable_uri` -> `uri` -> `string_literal`
+    collect_nodes_by_type(node, source, &["import_or_export"], &mut |n, src| {
+        // Find the string literal inside the import
+        fn find_string_literal(node: &tree_sitter::Node, src: &[u8]) -> Option<String> {
+            if node.kind() == "string_literal" {
+                let text = node_text(node, src).unwrap_or_default();
+                // Remove quotes
+                return Some(text.trim_matches('\'').trim_matches('"').to_string());
+            }
+            for i in 0..node.child_count() {
+                if let Some(child) = node.child(i) {
+                    if let Some(found) = find_string_literal(&child, src) {
+                        return Some(found);
+                    }
+                }
+            }
+            None
+        }
+        
+        if let Some(path) = find_string_literal(n, src) {
             if !path.is_empty() {
                 imports.push(Import {
                     from: "self".to_string(),
-                    to: path.to_string(),
+                    to: path,
                     line: n.range().start_point.row + 1,
                 });
             }
@@ -1100,15 +1116,31 @@ fn extract_imports_zig(node: &tree_sitter::Node, source: &[u8]) -> Result<Vec<Im
 
 fn extract_imports_elixir(node: &tree_sitter::Node, source: &[u8]) -> Result<Vec<Import>> {
     let mut imports = Vec::new();
-    collect_nodes_by_type(node, source, &["alias", "require", "import"], &mut |n, src| {
-        let text = node_text(n, src).unwrap_or_default();
-        let parts: Vec<&str> = text.split_whitespace().collect();
-        if parts.len() >= 2 {
-            imports.push(Import {
-                from: "self".to_string(),
-                to: parts[1].to_string(),
-                line: n.range().start_point.row + 1,
-            });
+    // Elixir: import/alias/require are `call` nodes with identifier as first child
+    collect_nodes_by_type(node, source, &["call"], &mut |n, src| {
+        // Check if this is an import/alias/require call
+        if let Some(id_node) = n.child(0) {
+            if id_node.kind() == "identifier" {
+                let keyword = node_text(&id_node, src).unwrap_or_default();
+                if matches!(keyword.as_str(), "import" | "alias" | "require") {
+                    // Get the module name from arguments
+                    if let Some(args_node) = n.child(1) {
+                        if args_node.kind() == "arguments" {
+                            // Get the first child of arguments which should be the module name
+                            if let Some(module_node) = args_node.child(0) {
+                                let module = node_text(&module_node, src).unwrap_or_default();
+                                if !module.is_empty() {
+                                    imports.push(Import {
+                                        from: "self".to_string(),
+                                        to: module,
+                                        line: n.range().start_point.row + 1,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
     })?;
     Ok(imports)
@@ -1116,16 +1148,26 @@ fn extract_imports_elixir(node: &tree_sitter::Node, source: &[u8]) -> Result<Vec
 
 fn extract_imports_haskell(node: &tree_sitter::Node, source: &[u8]) -> Result<Vec<Import>> {
     let mut imports = Vec::new();
-    collect_nodes_by_type(node, source, &["import_declaration"], &mut |n, src| {
+    // Haskell: imports are `import` nodes inside `imports` node
+    collect_nodes_by_type(node, source, &["import"], &mut |n, src| {
         let text = node_text(n, src).unwrap_or_default();
         // import Data.List
+        // import qualified Data.Map as Map
+        // import Data.Maybe (fromMaybe)
         let parts: Vec<&str> = text.split_whitespace().collect();
         if parts.len() >= 2 {
-            imports.push(Import {
-                from: "self".to_string(),
-                to: parts[1].to_string(),
-                line: n.range().start_point.row + 1,
-            });
+            // Skip "import" and "qualified" if present
+            let module_idx = if parts[1] == "qualified" { 2 } else { 1 };
+            if module_idx < parts.len() {
+                let module = parts[module_idx].trim_end_matches('.').trim_end_matches('(');
+                if !module.is_empty() {
+                    imports.push(Import {
+                        from: "self".to_string(),
+                        to: module.to_string(),
+                        line: n.range().start_point.row + 1,
+                    });
+                }
+            }
         }
     })?;
     Ok(imports)
@@ -1133,16 +1175,26 @@ fn extract_imports_haskell(node: &tree_sitter::Node, source: &[u8]) -> Result<Ve
 
 fn extract_imports_ocaml(node: &tree_sitter::Node, source: &[u8]) -> Result<Vec<Import>> {
     let mut imports = Vec::new();
-    collect_nodes_by_type(node, source, &["open_declaration", "include_declaration"], &mut |n, src| {
-        let text = node_text(n, src).unwrap_or_default();
-        // open Module or include Module
-        let parts: Vec<&str> = text.split_whitespace().collect();
-        if parts.len() >= 2 {
-            imports.push(Import {
-                from: "self".to_string(),
-                to: parts[1].to_string(),
-                line: n.range().start_point.row + 1,
-            });
+    // OCaml: imports are `open_module` nodes (open Base, open Core)
+    // open_module children: open (keyword), module_path (field "module")
+    // module_path child: module_name
+    collect_nodes_by_type(node, source, &["open_module"], &mut |n, src| {
+        // Try field name first
+        let module_path = n.child_by_field_name("module");
+        // Fallback: second child (index 1) is module_path
+        let module_path = module_path.or_else(|| n.child(1));
+        if let Some(module_path) = module_path {
+            // module_name is first child of module_path
+            if let Some(module_name) = module_path.child(0) {
+                let module = node_text(&module_name, src).unwrap_or_default();
+                if !module.is_empty() {
+                    imports.push(Import {
+                        from: "self".to_string(),
+                        to: module,
+                        line: n.range().start_point.row + 1,
+                    });
+                }
+            }
         }
     })?;
     Ok(imports)
@@ -1446,14 +1498,18 @@ fn extract_calls_c_cpp(node: &tree_sitter::Node, source: &[u8]) -> Result<Vec<Ca
 
 fn extract_calls_dart(node: &tree_sitter::Node, source: &[u8]) -> Result<Vec<Call>> {
     let mut calls = Vec::new();
-    collect_nodes_by_type(node, source, &["method_invocation", "function_invocation"], &mut |n, src| {
+    // Dart uses `call_expression` for both function calls and method calls
+    // member_expression is used for method access (obj.method)
+    collect_nodes_by_type(node, source, &["call_expression"], &mut |n, src| {
         let text = node_text(n, src).unwrap_or_default();
         let callee = extract_dart_call_callee(&text);
-        calls.push(Call {
-            caller: "unknown".to_string(),
-            callee,
-            line: n.range().start_point.row + 1,
-        });
+        if !callee.is_empty() {
+            calls.push(Call {
+                caller: "unknown".to_string(),
+                callee,
+                line: n.range().start_point.row + 1,
+            });
+        }
     })?;
     Ok(calls)
 }
@@ -1516,42 +1572,66 @@ fn extract_calls_zig(node: &tree_sitter::Node, source: &[u8]) -> Result<Vec<Call
 
 fn extract_calls_elixir(node: &tree_sitter::Node, source: &[u8]) -> Result<Vec<Call>> {
     let mut calls = Vec::new();
+    // Elixir: calls are `call` nodes. Filter out import/alias/require.
+    // Method calls have a `dot` child, bare calls don't.
     collect_nodes_by_type(node, source, &["call"], &mut |n, src| {
+        // Skip import/alias/require calls (they have identifier as first child)
+        if let Some(first_child) = n.child(0) {
+            if first_child.kind() == "identifier" {
+                let keyword = node_text(&first_child, src).unwrap_or_default();
+                if matches!(keyword.as_str(), "import" | "alias" | "require" | "def" | "defmodule" | "defp") {
+                    return;
+                }
+            }
+        }
+        // Check if this is a method call (has dot child) or bare function call
+        let has_dot = (0..n.child_count()).any(|i| n.child(i).map(|c| c.kind() == "dot").unwrap_or(false));
         let text = node_text(n, src).unwrap_or_default();
         let callee = extract_elixir_call_callee(&text);
-        calls.push(Call {
-            caller: "unknown".to_string(),
-            callee,
-            line: n.range().start_point.row + 1,
-        });
+        if !callee.is_empty() && (has_dot || text.contains('(')) {
+            calls.push(Call {
+                caller: "unknown".to_string(),
+                callee,
+                line: n.range().start_point.row + 1,
+            });
+        }
     })?;
     Ok(calls)
 }
 
 fn extract_calls_haskell(node: &tree_sitter::Node, source: &[u8]) -> Result<Vec<Call>> {
     let mut calls = Vec::new();
-    collect_nodes_by_type(node, source, &["application"], &mut |n, src| {
+    // Haskell: calls are `apply`, `infix`, `application` nodes
+    // `apply` - function application: func arg
+    // `infix` - infix operator: a `op` b or func $ arg
+    // `application` - general application
+    collect_nodes_by_type(node, source, &["apply", "infix"], &mut |n, src| {
         let text = node_text(n, src).unwrap_or_default();
         let callee = extract_haskell_call_callee(&text);
-        calls.push(Call {
-            caller: "unknown".to_string(),
-            callee,
-            line: n.range().start_point.row + 1,
-        });
+        if !callee.is_empty() {
+            calls.push(Call {
+                caller: "unknown".to_string(),
+                callee,
+                line: n.range().start_point.row + 1,
+            });
+        }
     })?;
     Ok(calls)
 }
 
 fn extract_calls_ocaml(node: &tree_sitter::Node, source: &[u8]) -> Result<Vec<Call>> {
     let mut calls = Vec::new();
-    collect_nodes_by_type(node, source, &["application"], &mut |n, src| {
+    // OCaml: calls are `application_expression` nodes
+    collect_nodes_by_type(node, source, &["application_expression"], &mut |n, src| {
         let text = node_text(n, src).unwrap_or_default();
         let callee = extract_ocaml_call_callee(&text);
-        calls.push(Call {
-            caller: "unknown".to_string(),
-            callee,
-            line: n.range().start_point.row + 1,
-        });
+        if !callee.is_empty() {
+            calls.push(Call {
+                caller: "unknown".to_string(),
+                callee,
+                line: n.range().start_point.row + 1,
+            });
+        }
     })?;
     Ok(calls)
 }

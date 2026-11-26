@@ -288,3 +288,152 @@ namespace MyApp
     // Method detection depends on language grammar
     // assert!(kinds.contains(&SymbolKind::Method), "нет метода: {kinds:?}");
 }
+#[test]
+fn parse_elixir_symbols_imports_and_calls() {
+    let mut parser = LanguageParser::new();
+    let code = r#"
+defmodule MyModule do
+  import OtherModule
+  alias MyApp.SomeModule
+  require Logger
+
+  def run do
+    OtherModule.func()
+    SomeModule.other()
+    Logger.info("test")
+  end
+end
+"#;
+    let parsed = parser.parse("lib/my_module.ex", code).expect("elixir parse");
+    assert_eq!(parsed.language, "elixir");
+    
+    // Check imports
+    let import_paths: Vec<String> = parsed.imports.iter().map(|i| i.to.clone()).collect();
+    assert!(import_paths.iter().any(|p| p.contains("OtherModule")), "imports: {:?}", import_paths);
+    assert!(import_paths.iter().any(|p| p.contains("SomeModule")), "imports: {:?}", import_paths);
+    assert!(import_paths.iter().any(|p| p.contains("Logger")), "imports: {:?}", import_paths);
+    
+    // Check symbols
+    let names: Vec<&str> = parsed.symbols.iter().map(|s| s.name.as_str()).collect();
+    assert!(names.contains(&"MyModule"), "symbols: {:?}", names);
+    assert!(names.contains(&"run"), "symbols: {:?}", names);
+    
+    // Check calls
+    let callees: Vec<String> = parsed.calls.iter().map(|c| c.callee.clone()).collect();
+    assert!(callees.iter().any(|c| c.contains("func")), "calls: {:?}", callees);
+    assert!(callees.iter().any(|c| c.contains("other")), "calls: {:?}", callees);
+    assert!(callees.iter().any(|c| c.contains("info")), "calls: {:?}", callees);
+}
+
+#[test]
+fn parse_haskell_symbols_imports_and_calls() {
+    let mut parser = LanguageParser::new();
+    let code = r#"
+module Main where
+
+import Data.List
+import qualified Data.Map as Map
+import Data.Maybe (fromMaybe)
+
+main :: IO ()
+main = do
+  let list = [1,2,3]
+  print $ Map.lookup 1 Map.empty
+  print $ fromMaybe "default" Nothing
+"#;
+    let parsed = parser.parse("Main.hs", code).expect("haskell parse");
+    assert_eq!(parsed.language, "haskell");
+    
+    // Check imports
+    let import_paths: Vec<String> = parsed.imports.iter().map(|i| i.to.clone()).collect();
+    assert!(import_paths.iter().any(|p| p.contains("Data.List")), "imports: {:?}", import_paths);
+    assert!(import_paths.iter().any(|p| p.contains("Data.Map")), "imports: {:?}", import_paths);
+    assert!(import_paths.iter().any(|p| p.contains("Data.Maybe")), "imports: {:?}", import_paths);
+    
+    // Check symbols
+    let names: Vec<&str> = parsed.symbols.iter().map(|s| s.name.as_str()).collect();
+    assert!(names.contains(&"main"), "symbols: {:?}", names);
+    
+    // Check calls
+    let callees: Vec<String> = parsed.calls.iter().map(|c| c.callee.clone()).collect();
+    assert!(callees.iter().any(|c| c.contains("print")), "calls: {:?}", callees);
+    assert!(callees.iter().any(|c| c.contains("Map.lookup")), "calls: {:?}", callees);
+    assert!(callees.iter().any(|c| c.contains("fromMaybe")), "calls: {:?}", callees);
+}
+
+#[test]
+fn parse_ocaml_symbols_imports_and_calls() {
+    let mut parser = LanguageParser::new();
+    let code = r#"
+open Base
+open Core
+
+module MyModule = struct
+  let func x = x + 1
+end
+
+let () = 
+  MyModule.func 5
+"#;
+    let parsed = parser.parse("test.ml", code).expect("ocaml parse");
+    assert_eq!(parsed.language, "ocaml");
+    
+    // Check imports
+    let import_paths: Vec<String> = parsed.imports.iter().map(|i| i.to.clone()).collect();
+    assert!(import_paths.iter().any(|p| p == "Base"), "imports: {:?}", import_paths);
+    assert!(import_paths.iter().any(|p| p == "Core"), "imports: {:?}", import_paths);
+    
+    // Check symbols
+    let names: Vec<&str> = parsed.symbols.iter().map(|s| s.name.as_str()).collect();
+    assert!(names.contains(&"MyModule"), "symbols: {:?}", names);
+    assert!(names.contains(&"func"), "symbols: {:?}", names);
+    
+    // Check calls
+    let callees: Vec<String> = parsed.calls.iter().map(|c| c.callee.clone()).collect();
+    assert!(callees.iter().any(|c| c.contains("func")), "calls: {:?}", callees);
+}
+
+#[test]
+fn parse_dart_symbols_imports_and_calls() {
+    let mut parser = LanguageParser::new();
+    let code = r#"
+import 'package:flutter/widgets.dart';
+import 'my_helper.dart';
+
+void main() {
+  print('Hello');
+  helper();
+  obj.method();
+}
+
+void helper() {
+  print('Helper');
+}
+
+class MyClass {
+  void method() {
+    print('Method');
+  }
+}
+"#;
+    let parsed = parser.parse("main.dart", code).expect("dart parse");
+    assert_eq!(parsed.language, "dart");
+    
+    // Check imports
+    let import_paths: Vec<String> = parsed.imports.iter().map(|i| i.to.clone()).collect();
+    assert!(import_paths.iter().any(|p| p.contains("flutter")), "imports: {:?}", import_paths);
+    assert!(import_paths.iter().any(|p| p.contains("my_helper")), "imports: {:?}", import_paths);
+    
+    // Check symbols
+    let names: Vec<&str> = parsed.symbols.iter().map(|s| s.name.as_str()).collect();
+    assert!(names.contains(&"main"), "symbols: {:?}", names);
+    assert!(names.contains(&"helper"), "symbols: {:?}", names);
+    assert!(names.contains(&"MyClass"), "symbols: {:?}", names);
+    assert!(names.contains(&"method"), "symbols: {:?}", names);
+    
+    // Check calls
+    let callees: Vec<String> = parsed.calls.iter().map(|c| c.callee.clone()).collect();
+    assert!(callees.iter().any(|c| c.contains("print")), "calls: {:?}", callees);
+    assert!(callees.iter().any(|c| c.contains("helper")), "calls: {:?}", callees);
+    assert!(callees.iter().any(|c| c.contains("method")), "calls: {:?}", callees);
+}
