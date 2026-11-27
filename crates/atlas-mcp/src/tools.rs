@@ -1,5 +1,4 @@
 use crate::budget::{estimate_tokens, truncate_to_budget};
-use crate::cache::{CacheRegistry, SessionCache, CachedContext};
 use crate::format::ResponseFormatter;
 use anyhow::{anyhow, bail, Result};
 use atlas_core::secrets::{is_closed_path, is_config_path, mask_lines, mask_text};
@@ -10,7 +9,7 @@ use atlas_store::{
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Component, Path, PathBuf};
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
 // ---------------------------------------------------------------------------
 // Инструменты MCP (раздел 8.2 ТЗ): overview, search, outline, read, neighbors, context_for, status
@@ -117,6 +116,45 @@ fn rank_neighbors(nodes: &mut [Node]) {
     });
 }
 
+/// Проверяет, является ли символ публичным (для contract mode).
+fn is_public_symbol(node: &Node, _parent_path: &str) -> bool {
+    // Python: не начинается с _ (кроме __dunder__)
+    if node.lang.as_deref() == Some("python") {
+        let name = &node.name;
+        if name.starts_with('_') && !name.starts_with("__") {
+            return false;
+        }
+        return true;
+    }
+    // Rust: ищем pub в сигнатуре
+    if node.lang.as_deref() == Some("rust") {
+        if let Some(sig) = node.signature.as_deref() {
+            // pub fn, pub const, pub type, pub struct, pub enum
+            if sig.contains("pub ") {
+                return true;
+            }
+        }
+        return false;
+    }
+    // JS/TS: exported (export const/function/class) или нет _ prefix
+    if matches!(node.lang.as_deref(), Some("javascript") | Some("typescript")) {
+        if let Some(sig) = node.signature.as_deref() {
+            if sig.contains("export ") {
+                return true;
+            }
+        }
+        // Не экспортированные с _ считаем приватными
+        if node.name.starts_with('_') {
+            return false;
+        }
+        return true;
+    }
+    // По умолчанию — публичный
+    true
+}
+
+
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Tool {
     Overview,
@@ -197,7 +235,7 @@ impl Tool {
             Tool::ContextFor => json!({"type": "object", "required": ["symbol"], "properties": {
                 "symbol": {"type": "string"},
                 "path": {"type": "string", "description": "Уточнение, если имён несколько"},
-                "include_body": {"type": "string", "enum": ["true", "false"], "description": "Включать ли тело функции (default: true)"},
+                "include_body": {"type": "boolean", "description": "Включать ли тело функции (default: true)"},
                 "max_tokens": max_tokens}}),
             Tool::Status => json!({"type": "object", "properties": {}}),
         }
@@ -286,23 +324,13 @@ pub struct ToolResult {
 /// Реестр инструментов: читает индекс и файлы проекта, ничего не меняет (раздел 8.5 ТЗ).
 pub struct ToolRegistry {
     pub(crate) store: Arc<Store>,
-    /// Кэш сессий для оптимизации повторных запросов (Optimization 4)
-    cache_registry: Arc<CacheRegistry>,
 }
 
 type Body = (String, Vec<String>);
 
 impl ToolRegistry {
     pub fn new(store: Arc<Store>) -> Self {
-        Self { 
-            store,
-            cache_registry: Arc::new(CacheRegistry::default()),
-        }
-    }
-
-    /// Получить кэш для текущей сессии
-    fn session_cache(&self, session_id: &str) -> Arc<RwLock<SessionCache>> {
-        self.cache_registry.get_or_create(session_id)
+        Self { store }
     }
 
     pub fn list_tools(&self) -> Vec<Tool> {
@@ -373,13 +401,6 @@ impl ToolRegistry {
     // --- overview: карта проекта (L0) или каталога (L1) ---
 
     fn overview(&self, ctx: &ToolContext) -> Result<Body> {
-        let path_arg = ctx.str_arg("path");
-        
-        // Попытка получить из кэша (Optimization 4)
-        if let Some(cached) = self.session_cache(&ctx.session_id).read().unwrap().get_overview(path_arg.as_deref()) {
-            return Ok((cached.text, cached.node_ids));
-        }
-        
         let files = self.store.nodes_of_kinds(&[NodeKind::File])?;
         let symbols = self.symbols_by_path()?;
         let mut ids = Vec::new();
@@ -483,18 +504,6 @@ impl ToolRegistry {
 
         let (text, shown) = truncate_to_budget(&lines, budget(ctx, &Tool::Overview));
         let result_text = with_omitted(text, shown, lines.len(), "уточните path");
-        let tokens = estimate_tokens(&result_text);
-        
-        // Сохраняем в кэш
-        let cached = CachedContext {
-            symbol: "overview".into(),
-            path: path_arg.clone(),
-            text: result_text.clone(),
-            tokens,
-            node_ids: ids.clone(),
-            timestamp: std::time::Instant::now(),
-        };
-        self.session_cache(&ctx.session_id).write().unwrap().set_overview(path_arg.as_deref(), cached);
         
         Ok((result_text, ids))
     }
@@ -506,11 +515,6 @@ impl ToolRegistry {
             .str_arg("query")
             .ok_or_else(|| anyhow!("нужен параметр query"))?;
         let limit = ctx.usize_arg("limit").unwrap_or(10).clamp(1, 50);
-        
-        // Попытка получить из кэша (Optimization 4)
-        if let Some(cached) = self.session_cache(&ctx.session_id).read().unwrap().get_search(&query, limit) {
-            return Ok((cached.text, cached.node_ids));
-        }
         
         // Используем ранжированный поиск из atlas-core (FTS5 + бонус за ранг/тип символа)
         let found: Vec<atlas_store::schema::Node> = atlas_core::search(&self.store, &query, limit)?
@@ -534,18 +538,6 @@ impl ToolRegistry {
         }
         let (text, shown) = truncate_to_budget(&lines, budget(ctx, &Tool::Search));
         let result_text = with_omitted(text, shown, lines.len(), "уточните запрос");
-        let tokens = estimate_tokens(&result_text);
-        
-        // Сохраняем в кэш
-        let cached = CachedContext {
-            symbol: "search".into(),
-            path: Some(format!("{}:{}", query, limit)),
-            text: result_text.clone(),
-            tokens,
-            node_ids: ids.clone(),
-            timestamp: std::time::Instant::now(),
-        };
-        self.session_cache(&ctx.session_id).write().unwrap().set_search(&query, limit, cached);
         
         Ok((result_text, ids))
     }
@@ -623,15 +615,30 @@ impl ToolRegistry {
                 if mode == "contract" {
                     // Добавляем публичные дочерние символы (методы класса, экспорты модуля)
                     let children = self.store.nodes_in_file(&node.path)?;
-                    let child_symbols: Vec<&Node> = children.iter()
+                    let mut child_symbols: Vec<Node> = children.iter()
                         .filter(|c| {
                             c.line_start.is_some()
                             && c.line_start.unwrap_or(0) > node.line_start.unwrap_or(0)
                             && c.line_end.unwrap_or(0) <= node.line_end.unwrap_or(0)
                             && matches!(c.kind, NodeKind::Method | NodeKind::Function | NodeKind::Constant | NodeKind::Type)
+                            && is_public_symbol(c, &node.path)
                         })
                         .take(20)
+                        .cloned()
                         .collect();
+                    
+                    // Для Rust struct: ищем методы в impl блоках
+                    if node.lang.as_deref() == Some("rust")
+                        && matches!(node.kind, NodeKind::Type | NodeKind::Class)
+                    {
+                        let impl_methods = find_rust_impl_methods(&self.store, &ctx.project_root, &node.path, &node.name)?;
+                        for m in impl_methods {
+                            if is_public_symbol(&m, &node.path) && child_symbols.len() < 20 {
+                                child_symbols.push(m);
+                            }
+                        }
+                    }
+                    
                     if !child_symbols.is_empty() {
                         body.push("публичные члены:".into());
                         for c in child_symbols {
@@ -640,6 +647,7 @@ impl ToolRegistry {
                             }
                         }
                     }
+                    
                 }
                 return Ok((body.join("\n"), vec![node.id.to_string()]));
             }
@@ -698,14 +706,7 @@ impl ToolRegistry {
 
     fn neighbors(&self, ctx: &ToolContext) -> Result<Body> {
         let symbol = ctx.str_arg("symbol");
-        let symbol_for_cache = symbol.clone(); // Clone early for cache key
         let path = ctx.str_arg("path");
-        let path_for_cache = path.clone(); // Clone early for cache key
-        
-        // Попытка получить из кэша (Optimization 4)
-        if let Some(cached) = self.session_cache(&ctx.session_id).read().unwrap().get_neighbors(symbol_for_cache.as_deref(), path_for_cache.as_deref()) {
-            return Ok((cached.text, cached.node_ids));
-        }
         
         let node = if symbol.is_some() {
             self.resolve_symbol(ctx)?.0
@@ -780,18 +781,6 @@ impl ToolRegistry {
         }
         let (text, shown) = truncate_to_budget(&lines, budget(ctx, &Tool::Neighbors));
         let result_text = with_omitted(text, shown, lines.len(), "");
-        let tokens = estimate_tokens(&result_text);
-        
-        // Сохраняем в кэш
-        let cached = CachedContext {
-            symbol: symbol_for_cache.as_ref().map_or("file".into(), |s| s.clone()),
-            path: path_for_cache.clone(),
-            text: result_text.clone(),
-            tokens,
-            node_ids: ids.clone(),
-            timestamp: std::time::Instant::now(),
-        };
-        self.session_cache(&ctx.session_id).write().unwrap().set_neighbors(symbol_for_cache.as_deref(), path_for_cache.as_deref(), cached);
         
         Ok((result_text, ids))
     }
@@ -799,20 +788,12 @@ impl ToolRegistry {
     // --- context_for: составной инструмент вместо 4-5 вызовов ---
 
     fn context_for(&self, ctx: &ToolContext) -> Result<Body> {
-        let symbol = ctx
-            .str_arg("symbol")
-            .ok_or_else(|| anyhow!("нужен параметр symbol"))?;
-        let path = ctx.str_arg("path");
-        // include_body=false — не отдавать тело функции, только связи и сигнатуру (parameter from #13)
-        let include_body = ctx.str_arg("include_body").map(|v| v != "false").unwrap_or(true);
-        
-        // Кэш учитывает include_body
-        let cache_key = format!("{}:body={}", symbol, include_body);
-        
-        // Попытка получить из кэша (Optimization 4)
-        if let Some(cached) = self.session_cache(&ctx.session_id).read().unwrap().get_context_for(&cache_key, path.as_deref()) {
-            return Ok((cached.text, cached.node_ids));
-        }
+        // include_body: boolean, default true
+        let include_body = ctx
+            .args
+            .get("include_body")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true);
         
         let (node, note) = self.resolve_symbol(ctx)?;
         let mut ids = vec![node.id.to_string()];
@@ -890,7 +871,7 @@ impl ToolRegistry {
             }
         }
 
-        // Тело символа (если include_body != false)
+        // Тело символа
         if include_body {
             // закрытый файл не должен ронять весь ответ: связи и тесты уже собраны
             match read_project_lines(&self.store, &ctx.project_root, &node.path) {
@@ -911,10 +892,14 @@ impl ToolRegistry {
                 Err(e) => { lines.push(e.to_string()); }
             }
         } else {
-            lines.push(format!(
-                "{PROJECT_DATA_NOTE} {}: сигнатура (тело скрыто, include_body=false)",
-                node.path
-            ));
+            // include_body=false: показываем только сигнатуру
+            if let Some(sig) = node.signature.as_deref() {
+                lines.push(format!(
+                    "{PROJECT_DATA_NOTE} {}: сигнатура\n{}",
+                    node.path,
+                    sig
+                ));
+            }
         }
 
         let (text, shown) = truncate_to_budget(&lines, budget(ctx, &Tool::ContextFor));
@@ -924,18 +909,6 @@ impl ToolRegistry {
             lines.len(),
             "запросите read{symbol, start_line, end_line}",
         );
-        let tokens = estimate_tokens(&result_text);
-        
-        // Сохраняем в кэш (с учётом include_body в ключе)
-        let cached = CachedContext {
-            symbol: cache_key.clone(),
-            path: path.clone(),
-            text: result_text.clone(),
-            tokens,
-            node_ids: ids.clone(),
-            timestamp: std::time::Instant::now(),
-        };
-        self.session_cache(&ctx.session_id).write().unwrap().set_context_for(&cache_key, path.as_deref(), cached);
         
         Ok((result_text, ids))
     }
@@ -1107,12 +1080,29 @@ pub(crate) fn normalize_rel(path: &str) -> String {
 /// Читает файл проекта построчно. Путь обязан остаться внутри корня проекта (раздел 10.1 ТЗ).
 /// Закрытые пути (секреты, .env, ключи, .git, .atlas) не отдаются, а значения,
 /// похожие на токены/ключи, маскируются (раздел 10.1, п.5 ТЗ).
+/// .atlasignore также учитывается (даже без наблюдателя).
 pub(crate) fn read_project_lines(store: &Store, root: &str, rel_path: &str) -> Result<Vec<String>> {
     if store.is_user_closed(rel_path) {
         bail!("путь «{rel_path}» закрыт настройками проекта (closedPaths)");
     }
     if is_closed_path(rel_path) {
         bail!("путь «{rel_path}» закрыт для чтения через MCP (секрет или служебный каталог)");
+    }
+    // .atlasignore — проверка для исходного пути
+    {
+        let ignore_path = Path::new(root).join(".atlasignore");
+        if ignore_path.exists() {
+            let content = std::fs::read_to_string(&ignore_path)?;
+            for line in content.lines() {
+                let line = line.trim();
+                if !line.is_empty() && !line.starts_with('#') {
+                    let pattern = line.trim_end_matches('/');
+                    if match_path(pattern, rel_path) {
+                        bail!("путь «{rel_path}» закрыт .atlasignore");
+                    }
+                }
+            }
+        }
     }
     let root =
         std::fs::canonicalize(root).map_err(|e| anyhow!("корень проекта недоступен: {e}"))?;
@@ -1123,16 +1113,113 @@ pub(crate) fn read_project_lines(store: &Store, root: &str, rel_path: &str) -> R
         bail!("путь «{rel_path}» вне проекта");
     }
     // Ссылка внутри проекта может вести на закрытый файл
-    let target = canonical.strip_prefix(&root)?.to_string_lossy().to_string();
-    if store.is_user_closed(&target) {
+    let target_path: String = canonical.strip_prefix(&root)?.to_string_lossy().to_string();
+    if store.is_user_closed(&target_path) {
         bail!("путь «{rel_path}» закрыт настройками проекта (closedPaths, ссылка)");
     }
-    if is_closed_path(&target) {
+    if is_closed_path(&target_path) {
         bail!("путь «{rel_path}» закрыт для чтения через MCP (ссылка на секрет)");
+    }
+    // .atlasignore — проверка для целевого пути (через ссылку)
+    {
+        let ignore_path = Path::new(&root).join(".atlasignore");
+        if ignore_path.exists() {
+            let content = std::fs::read_to_string(&ignore_path)?;
+            for line in content.lines() {
+                let line = line.trim();
+                if !line.is_empty() && !line.starts_with('#') {
+                    let pattern = line.trim_end_matches('/');
+                    if match_path(pattern, &target_path) {
+                        bail!("путь «{rel_path}» закрыт .atlasignore (через ссылку)");
+                    }
+                }
+            }
+        }
     }
     let content = std::fs::read_to_string(&canonical)
         .map_err(|e| anyhow!("не удалось прочитать «{rel_path}»: {e}"))?;
-    Ok(mask_lines(content.lines(), is_config_path(&target)))
+    Ok(mask_lines(content.lines(), is_config_path(&target_path)))
+}
+
+/// Примитивный матчинг путей (поддерживает *, **, ?, и trailing / для директорий).
+/// Правила как в .gitignore: паттерн без / совпадает с файлом И директорией (+ содержимое),
+/// паттерн с / — только с директорией (+ содержимое).
+fn match_path(pattern: &str, path: &str) -> bool {
+    let pattern = pattern.trim_end_matches('/');
+    
+    // Переводим в regex
+    let mut regex_str = String::new();
+    for ch in pattern.chars() {
+        match ch {
+            '*' => regex_str.push_str(".*"),
+            '?' => regex_str.push('.'),
+            '.' => regex_str.push_str("\\."),
+            c => regex_str.push(c),
+        }
+    }
+    // Паттерн может быть директорией: добавляем опциональный суффикс для содержимого
+    regex_str.push_str("(/.*)?");
+    
+    regex::Regex::new(&format!("^{}$", regex_str))
+        .map(|re| re.is_match(path))
+        .unwrap_or(false)
+}
+
+/// Находит методы в impl блоках для указанного Rust типа.
+fn find_rust_impl_methods(
+    store: &Store,
+    project_root: &str,
+    file_path: &str,
+    type_name: &str,
+) -> Result<Vec<Node>> {
+    let all_symbols = store.nodes_in_file(file_path)?;
+    let mut methods = Vec::new();
+    
+    // Читаем файл для поиска impl блоков
+    let full_path = std::path::Path::new(project_root).join(file_path);
+    let content = std::fs::read_to_string(&full_path).unwrap_or_default();
+    
+    // Простой поиск: ищем "impl TypeName" блоки и извлекаем методы
+    // Используем regex для поиска impl блоков
+    let impl_pattern = format!(r"impl\s+(?:<[^>]*>\s*)?{}\s*\{{", regex::escape(type_name));
+    let impl_regex = regex::Regex::new(&impl_pattern).ok();
+    
+    if let Some(re) = impl_regex {
+        for mat in re.find_iter(&content) {
+            let impl_start = mat.end();
+            // Находим соответствующую закрывающую скобку
+            let mut brace_count = 1;
+            let mut impl_end = impl_start;
+            for (i, ch) in content[impl_start..].char_indices() {
+                if ch == '{' {
+                    brace_count += 1;
+                } else if ch == '}' {
+                    brace_count -= 1;
+                    if brace_count == 0 {
+                        impl_end = impl_start + i + 1;
+                        break;
+                    }
+                }
+            }
+            
+            let impl_block = &content[impl_start..impl_end];
+            // Извлекаем сигнатуры методов из блока
+            let method_regex = regex::Regex::new(r"(?m)^\s*(?:pub\s+)?(?:async\s+)?fn\s+(\w+)\s*\(").unwrap();
+            for cap in method_regex.captures_iter(impl_block) {
+                let method_name = &cap[1];
+                // Ищем этот метод в символах
+                if let Some(method_node) = all_symbols.iter().find(|n| {
+                    n.name == method_name
+                        && matches!(n.kind, NodeKind::Method | NodeKind::Function)
+                        && n.line_start.is_some()
+                }) {
+                    methods.push(method_node.clone());
+                }
+            }
+        }
+    }
+    
+    Ok(methods)
 }
 
 fn indent_of(line: &str) -> usize {
@@ -1455,4 +1542,395 @@ mod tests {
         assert_eq!(n, 1);
         Ok(())
     }
+
+    #[test]
+    fn context_for_respects_closed_paths() -> Result<()> {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_string_lossy().to_string();
+        std::fs::create_dir(dir.path().join("private")).unwrap();
+        std::fs::write(
+            dir.path().join("private/secret.py"),
+            "def hidden():\n    return 42\n",
+        )
+        .unwrap();
+        let store = Store::open(dir.path().join("test.db")).unwrap();
+        let f = node(NodeKind::File, "private/secret.py", "private/secret.py", None, None, None);
+        let hidden = node(
+            NodeKind::Function,
+            "private/secret.py",
+            "hidden",
+            Some(1),
+            Some(2),
+            Some("def hidden()"),
+        );
+        store.upsert_node(&f).unwrap();
+        store.upsert_node(&hidden).unwrap();
+        store
+            .set_setting("closedPaths", r#"["private/**"]"#)
+            .unwrap();
+        let registry = ToolRegistry::new(Arc::new(store));
+
+        let ctx = ToolContext::new(
+            "s".into(),
+            Tool::ContextFor,
+            0,
+            root.clone(),
+            HashMap::new(),
+        )
+        .with_args(json!({"symbol": "hidden"}));
+        let text = registry.execute(&Tool::ContextFor, &ctx)?.text;
+        // Ошибка содержит путь, но не должна содержать секретное значение
+        assert!(!text.contains("42"), "context_for не должен показывать секрет: {text}");
+        Ok(())
+    }
+
+    #[test]
+    fn read_respects_atlasignore_without_watcher() -> Result<()> {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_string_lossy().to_string();
+        // Создаём .atlasignore
+        std::fs::write(dir.path().join(".atlasignore"), "secret/\n").unwrap();
+        std::fs::create_dir(dir.path().join("secret")).unwrap();
+        std::fs::write(
+            dir.path().join("secret/leak.py"),
+            "SECRET = 123\n",
+        )
+        .unwrap();
+        let store = Store::open(dir.path().join("test.db")).unwrap();
+        let f = node(NodeKind::File, "secret/leak.py", "secret/leak.py", None, None, None);
+        let leak = node(
+            NodeKind::Constant,
+            "secret/leak.py",
+            "SECRET",
+            Some(1),
+            Some(1),
+            Some("SECRET = 123"),
+        );
+        store.upsert_node(&f).unwrap();
+        store.upsert_node(&leak).unwrap();
+        let registry = ToolRegistry::new(Arc::new(store));
+
+        // Прямой read по пути должен отказать
+        let ctx = ToolContext::new(
+            "s".into(),
+            Tool::Read,
+            0,
+            root.clone(),
+            HashMap::new(),
+        )
+        .with_args(json!({"path": "secret/leak.py"}));
+        let result = registry.execute(&Tool::Read, &ctx);
+        assert!(result.is_err(), "read должен вернуть ошибку для .atlasignore пути");
+        Ok(())
+    }
+
+    #[test]
+    fn context_for_reflects_reindex_changes() -> Result<()> {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_string_lossy().to_string();
+        std::fs::write(
+            dir.path().join("lib.py"),
+            "def calc():\n    return 111\n",
+        )
+        .unwrap();
+        let store = Arc::new(Store::open(dir.path().join("test.db")).unwrap());
+        let f = node(NodeKind::File, "lib.py", "lib.py", None, None, None);
+        let calc = node(
+            NodeKind::Function,
+            "lib.py",
+            "calc",
+            Some(1),
+            Some(2),
+            Some("def calc()"),
+        );
+        store.upsert_node(&f).unwrap();
+        store.upsert_node(&calc).unwrap();
+        let registry = ToolRegistry::new(store.clone());
+
+        // Первый запрос
+        let ctx1 = ToolContext::new(
+            "s".into(),
+            Tool::ContextFor,
+            0,
+            root.clone(),
+            HashMap::new(),
+        )
+        .with_args(json!({"symbol": "calc"}));
+        let text1 = registry.execute(&Tool::ContextFor, &ctx1)?.text;
+        assert!(text1.contains("111"), "первый запрос должен вернуть 111: {text1}");
+
+        // Симулируем переиндексацию: обновляем узел в хранилище
+        let mut calc_v2 = calc;
+        calc_v2.signature = Some("def calc():".into());
+        store.upsert_node(&calc_v2).unwrap();
+
+        // Обновляем файл на диске
+        std::fs::write(dir.path().join("lib.py"), "def calc():\n    return 222\n").unwrap();
+
+        // Второй запрос должен увидеть изменения
+        let ctx2 = ToolContext::new(
+            "s".into(),
+            Tool::ContextFor,
+            0,
+            root.clone(),
+            HashMap::new(),
+        )
+        .with_args(json!({"symbol": "calc"}));
+        let text2 = registry.execute(&Tool::ContextFor, &ctx2)?.text;
+        // Тело читается с диска, поэтому изменения в файле отразятся
+        assert!(!text2.is_empty(), "второй запрос не должен быть пустым");
+        Ok(())
+    }
+
+#[test]
+fn test_match_path_atlasignore() {
+    assert!(match_path("secret/", "secret/leak.py"), "secret/ should match secret/leak.py");
+    assert!(match_path("secret", "secret/leak.py"), "secret should match secret/leak.py");
+    assert!(match_path("secret/*", "secret/leak.py"), "secret/* should match secret/leak.py");
+    assert!(!match_path("secret/", "other/secret/leak.py"), "secret/ should not match other/secret/leak.py");
+    assert!(match_path("**/secret/", "other/secret/leak.py"), "**/secret/ should match other/secret/leak.py");
+}
+
+#[test]
+fn context_for_include_body_false_shows_signature_only() -> Result<()> {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().to_string_lossy().to_string();
+    std::fs::write(
+        dir.path().join("lib.py"),
+        "def calc():\n    x = 1\n    y = 2\n    return x + y\n",
+    )
+    .unwrap();
+    let store = Arc::new(Store::open(dir.path().join("test.db")).unwrap());
+    let f = node(NodeKind::File, "lib.py", "lib.py", None, None, None);
+    let calc = node(
+        NodeKind::Function,
+        "lib.py",
+        "calc",
+        Some(1),
+        Some(4),
+        Some("def calc()"),
+    );
+    store.upsert_node(&f).unwrap();
+    store.upsert_node(&calc).unwrap();
+    let registry = ToolRegistry::new(store.clone());
+
+    // include_body=true (default) — должно быть тело
+    let ctx1 = ToolContext::new(
+        "s".into(),
+        Tool::ContextFor,
+        0,
+        root.clone(),
+        HashMap::new(),
+    )
+    .with_args(json!({"symbol": "calc", "include_body": true}));
+    let text1 = registry.execute(&Tool::ContextFor, &ctx1)?.text;
+    assert!(text1.contains("x = 1"), "include_body=true должно показывать тело: {text1}");
+
+    // include_body=false — только сигнатура
+    let ctx2 = ToolContext::new(
+        "s".into(),
+        Tool::ContextFor,
+        0,
+        root.clone(),
+        HashMap::new(),
+    )
+    .with_args(json!({"symbol": "calc", "include_body": false}));
+    let text2 = registry.execute(&Tool::ContextFor, &ctx2)?.text;
+    assert!(!text2.contains("x = 1"), "include_body=false не должно показывать тело: {text2}");
+    assert!(text2.contains("def calc()"), "include_body=false должно показывать сигнатуру: {text2}");
+    assert!(text2.contains("сигнатура"), "include_body=false должно содержать метку сигнатуры: {text2}");
+    Ok(())
+}
+
+#[test]
+fn contract_mode_filters_private_members_python() -> Result<()> {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().to_string_lossy().to_string();
+    std::fs::write(
+        dir.path().join("lib.py"),
+        "class MyClass:\n    def public_method(self):\n        return 1\n    def _private_method(self):\n        return 2\n    def __dunder__(self):\n        return 3\n",
+    )
+    .unwrap();
+    let store = Arc::new(Store::open(dir.path().join("test.db")).unwrap());
+    let f = node(NodeKind::File, "lib.py", "lib.py", None, None, None);
+    let cls = node(
+        NodeKind::Class,
+        "lib.py",
+        "MyClass",
+        Some(1),
+        Some(7),
+        Some("class MyClass:"),
+    );
+    let pub_method = node(
+        NodeKind::Method,
+        "lib.py",
+        "public_method",
+        Some(2),
+        Some(3),
+        Some("def public_method(self):"),
+    );
+    let priv_method = node(
+        NodeKind::Method,
+        "lib.py",
+        "_private_method",
+        Some(4),
+        Some(5),
+        Some("def _private_method(self):"),
+    );
+    let dunder_method = node(
+        NodeKind::Method,
+        "lib.py",
+        "__dunder__",
+        Some(6),
+        Some(7),
+        Some("def __dunder__(self):"),
+    );
+    store.upsert_node(&f).unwrap();
+    store.upsert_node(&cls).unwrap();
+    store.upsert_node(&pub_method).unwrap();
+    store.upsert_node(&priv_method).unwrap();
+    store.upsert_node(&dunder_method).unwrap();
+    let registry = ToolRegistry::new(store.clone());
+
+    // contract mode для класса
+    let ctx = ToolContext::new(
+        "s".into(),
+        Tool::Read,
+        0,
+        root.clone(),
+        HashMap::new(),
+    )
+    .with_args(json!({"symbol": "MyClass", "mode": "contract"}));
+    let text = registry.execute(&Tool::Read, &ctx)?.text;
+    
+    // Публичные и dunder методы должны быть
+    assert!(text.contains("public_method"), "contract должен показывать public_method: {text}");
+    assert!(text.contains("__dunder__"), "contract должен показывать __dunder__: {text}");
+    // Приватные методы не должны быть
+    assert!(!text.contains("_private_method"), "contract НЕ должен показывать _private_method: {text}");
+    Ok(())
+}
+
+#[test]
+fn contract_mode_filters_private_members_js() -> Result<()> {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().to_string_lossy().to_string();
+    std::fs::write(
+        dir.path().join("lib.js"),
+        "export function publicFunc() { return 1; }\nfunction _privateFunc() { return 2; }\n",
+    )
+    .unwrap();
+    let store = Arc::new(Store::open(dir.path().join("test.db")).unwrap());
+    let f = node(NodeKind::File, "lib.js", "lib.js", None, None, None);
+    let pub_func = node(
+        NodeKind::Function,
+        "lib.js",
+        "publicFunc",
+        Some(1),
+        Some(1),
+        Some("export function publicFunc()"),
+    );
+    let priv_func = node(
+        NodeKind::Function,
+        "lib.js",
+        "_privateFunc",
+        Some(2),
+        Some(2),
+        Some("function _privateFunc()"),
+    );
+    store.upsert_node(&f).unwrap();
+    store.upsert_node(&pub_func).unwrap();
+    store.upsert_node(&priv_func).unwrap();
+    let registry = ToolRegistry::new(store.clone());
+
+    // contract mode для модуля (файла)
+    let ctx = ToolContext::new(
+        "s".into(),
+        Tool::Read,
+        0,
+        root.clone(),
+        HashMap::new(),
+    )
+    .with_args(json!({"symbol": "publicFunc", "mode": "contract"}));
+    let text = registry.execute(&Tool::Read, &ctx)?.text;
+    
+    // Экспортированные должны быть, приватные с _ - нет
+    assert!(text.contains("publicFunc"), "contract должен показывать publicFunc: {text}");
+    assert!(!text.contains("_privateFunc"), "contract НЕ должен показывать _privateFunc: {text}");
+    Ok(())
+}
+
+#[test]
+fn contract_mode_finds_rust_impl_methods() -> Result<()> {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().to_string_lossy().to_string();
+    std::fs::write(
+        dir.path().join("lib.rs"),
+        "struct MyStruct {\n    value: i32,\n}\n\nimpl MyStruct {\n    pub fn new() -> Self {\n        Self { value: 0 }\n    }\n    pub fn get_value(&self) -> i32 {\n        self.value\n    }\n    fn private_method(&self) {\n        // private\n    }\n}\n",
+    )
+    .unwrap();
+    let store = Arc::new(Store::open(dir.path().join("test.db")).unwrap());
+    let mut f = node(NodeKind::File, "lib.rs", "lib.rs", None, None, None);
+    f.lang = Some("rust".into());
+    let mut struc = node(
+        NodeKind::Type,
+        "lib.rs",
+        "MyStruct",
+        Some(1),
+        Some(3),
+        Some("struct MyStruct"),
+    );
+    struc.lang = Some("rust".into());
+    let mut new_method = node(
+        NodeKind::Method,
+        "lib.rs",
+        "new",
+        Some(6),
+        Some(8),
+        Some("pub fn new() -> Self"),
+    );
+    new_method.lang = Some("rust".into());
+    let mut get_method = node(
+        NodeKind::Method,
+        "lib.rs",
+        "get_value",
+        Some(10),
+        Some(12),
+        Some("pub fn get_value(&self) -> i32"),
+    );
+    get_method.lang = Some("rust".into());
+    let mut priv_method = node(
+        NodeKind::Method,
+        "lib.rs",
+        "private_method",
+        Some(14),
+        Some(16),
+        Some("fn private_method(&self)"),
+    );
+    priv_method.lang = Some("rust".into());
+    store.upsert_node(&f).unwrap();
+    store.upsert_node(&struc).unwrap();
+    store.upsert_node(&new_method).unwrap();
+    store.upsert_node(&get_method).unwrap();
+    store.upsert_node(&priv_method).unwrap();
+    let registry = ToolRegistry::new(store.clone());
+
+    // contract mode для структуры
+    let ctx = ToolContext::new(
+        "s".into(),
+        Tool::Read,
+        0,
+        root.clone(),
+        HashMap::new(),
+    )
+    .with_args(json!({"symbol": "MyStruct", "mode": "contract"}));
+    let text = registry.execute(&Tool::Read, &ctx)?.text;
+    
+    // Публичные методы из impl блока должны быть
+    assert!(text.contains("new"), "contract должен показывать new: {text}");
+    assert!(text.contains("get_value"), "contract должен показывать get_value: {text}");
+    // Приватные методы не должны быть
+    assert!(!text.contains("private_method"), "contract НЕ должен показывать private_method: {text}");
+    Ok(())
+}
 }

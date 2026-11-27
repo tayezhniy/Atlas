@@ -194,6 +194,7 @@ dependencies = [
  "atlas-core",
  "atlas-store",
  "chrono",
+ "regex",
  "serde",
  "serde_json",
  "tempfile",

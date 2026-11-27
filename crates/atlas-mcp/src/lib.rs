@@ -1,5 +1,4 @@
 pub mod budget;
-pub mod cache;
 pub mod format;
 pub mod log;
 pub mod server;
@@ -9,4 +8,3 @@ mod ui;
 // Реэкспорт
 pub use server::{McpConfig, McpServer, Transport};
 pub use tools::{Tool, ToolContext, ToolRegistry};
-pub use cache::{CacheRegistry, SessionCache, CachedContext, CacheStats};

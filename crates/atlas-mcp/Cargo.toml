@@ -16,6 +16,7 @@ chrono = { workspace = true }
 thiserror = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
+regex = "1"
 # mcp = { workspace = true } — отключено: нет подходящей версии на crates.io, будет добавлено на этапе MCP
 
 [dev-dependencies]
