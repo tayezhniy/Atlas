@@ -263,7 +263,7 @@ impl McpServer {
         .with_args(args);
 
         // Ошибки инструмента — не ошибки протокола: модель должна их увидеть и поправить вызов
-        let mut registry = ToolRegistry::new(store.clone());
+        let registry = ToolRegistry::new(store.clone());
         match registry.execute(&tool, &ctx) {
             Ok(result) => ok_reply(
                 id,
