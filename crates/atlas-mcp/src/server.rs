@@ -42,8 +42,8 @@ impl Default for McpConfig {
 /// Поддерживает динамическое переключение проектов через аргумент `project_path` в вызовах инструментов.
 pub struct McpServer {
     config: McpConfig,
-    /// Карта: project_root -> (Store, tool_budgets). Arc<RwLock> для совместного доступа.
-    stores: Arc<RwLock<HashMap<String, (Arc<Store>, HashMap<String, usize>)>>>,
+    /// Карта: project_root -> (Store, ToolRegistry, tool_budgets). Arc<RwLock> для совместного доступа.
+    stores: Arc<RwLock<HashMap<String, (Arc<Store>, Arc<ToolRegistry>, HashMap<String, usize>)>>>,
     default_project_root: String,
     session_id: String,
 }
@@ -64,7 +64,9 @@ impl McpServer {
         }
 
         let mut stores = HashMap::new();
-        stores.insert(project_root.clone(), (Arc::new(store), tool_budgets));
+        let store_arc = Arc::new(store);
+        let registry = Arc::new(ToolRegistry::new(store_arc.clone()));
+        stores.insert(project_root.clone(), (store_arc, registry, tool_budgets));
 
         Self {
             config,
@@ -101,13 +103,16 @@ impl McpServer {
         Ok(())
     }
 
-    /// Получает или создаёт Store для указанного проекта
-    fn get_or_create_store(&self, project_root: &str) -> Result<(Arc<Store>, HashMap<String, usize>)> {
+    /// Получает или создаёт Store и Registry для указанного проекта
+    fn get_or_create_store_and_registry(
+        &self,
+        project_root: &str,
+    ) -> Result<(Arc<Store>, Arc<ToolRegistry>, HashMap<String, usize>)> {
         // Сначала пробуем получить с read lock
         {
             let stores = self.stores.read().unwrap();
-            if let Some((store, budgets)) = stores.get(project_root) {
-                return Ok((store.clone(), budgets.clone()));
+            if let Some((store, registry, budgets)) = stores.get(project_root) {
+                return Ok((store.clone(), registry.clone(), budgets.clone()));
             }
         }
 
@@ -115,8 +120,8 @@ impl McpServer {
         let mut stores = self.stores.write().unwrap();
 
         // Double-check после получения write lock
-        if let Some((store, budgets)) = stores.get(project_root) {
-            return Ok((store.clone(), budgets.clone()));
+        if let Some((store, registry, budgets)) = stores.get(project_root) {
+            return Ok((store.clone(), registry.clone(), budgets.clone()));
         }
 
         // Открываем новый store для проекта
@@ -131,6 +136,7 @@ impl McpServer {
         }
 
         let store = Arc::new(Store::open(&db_path)?);
+        let registry = Arc::new(ToolRegistry::new(store.clone()));
 
         // Загружаем настройки проекта
         let mut tool_budgets = self.config.tool_budgets.clone();
@@ -144,8 +150,8 @@ impl McpServer {
             }
         }
 
-        stores.insert(project_root.to_string(), (store.clone(), tool_budgets.clone()));
-        Ok((store, tool_budgets))
+        stores.insert(project_root.to_string(), (store.clone(), registry.clone(), tool_budgets.clone()));
+        Ok((store, registry, tool_budgets))
     }
 
     /// Обрабатывает одно входящее сообщение. Для уведомлений ответа нет.
@@ -185,11 +191,10 @@ impl McpServer {
             "ping" => ok_reply(id, json!({})),
             "tools/list" => {
                 // tools/list не зависит от проекта, используем store проекта по умолчанию
-                let (store, _) = match self.get_or_create_store(&self.default_project_root) {
+                let (_, registry, _) = match self.get_or_create_store_and_registry(&self.default_project_root) {
                     Ok(v) => v,
                     Err(e) => return Some(error_reply(id, -32000, &e.to_string()).to_string()),
                 };
-                let registry = ToolRegistry::new(store);
                 let tools: Vec<Value> = registry
                     .list_tools()
                     .iter()
@@ -212,9 +217,8 @@ impl McpServer {
                 let project_root = args.get("project_path")
                     .and_then(Value::as_str)
                     .unwrap_or(&self.default_project_root);
-                match self.get_or_create_store(project_root) {
-                    Ok((store, _)) => {
-                        let registry = ToolRegistry::new(store);
+                match self.get_or_create_store_and_registry(project_root) {
+                    Ok((_, registry, _)) => {
                         match registry.ui(project_root, method, &args) {
                             Ok(result) => ok_reply(id, result),
                             Err(e) => error_reply(id, -32000, &e.to_string()),
@@ -243,7 +247,7 @@ impl McpServer {
             .and_then(Value::as_str)
             .unwrap_or(&self.default_project_root);
 
-        let (store, tool_budgets) = match self.get_or_create_store(project_root) {
+        let (_, registry, tool_budgets) = match self.get_or_create_store_and_registry(project_root) {
             Ok(v) => v,
             Err(e) => {
                 return ok_reply(
@@ -263,7 +267,6 @@ impl McpServer {
         .with_args(args);
 
         // Ошибки инструмента — не ошибки протокола: модель должна их увидеть и поправить вызов
-        let registry = ToolRegistry::new(store.clone());
         match registry.execute(&tool, &ctx) {
             Ok(result) => ok_reply(
                 id,

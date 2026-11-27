@@ -89,82 +89,6 @@ fn is_stdlib_import(import: &str) -> bool {
     false
 }
 
-/// Суммаризация тела функции эвристически (Optimization 3: Body Summarization).
-/// Возвращает компактное описание вместо полного кода.
-fn summarize_body(lines: &[(usize, &str)], max_chars: usize) -> String {
-    let content: String = lines.iter().map(|(_, l)| *l).collect::<Vec<_>>().join("\n");
-    let chars: Vec<char> = content.chars().collect();
-    if chars.len() <= max_chars {
-        return content;
-    }
-    // Эвристика: ищем ключевые паттерны
-    let mut summary = String::new();
-    let content_lower = content.to_lowercase();
-    
-    // Паттерны для разных языков
-    let patterns = [
-        // Условия/ветвления
-        ("if ", "ветвление"),
-        ("else ", "альтернатива"),
-        ("match ", "матчинг"),
-        ("switch ", "свитч"),
-        // Циклы
-        ("for ", "цикл"),
-        ("while ", "цикл"),
-        ("loop ", "цикл"),
-        // Возвраты
-        ("return ", "возврат"),
-        ("yield ", "yield"),
-        // Вызовы
-        ("await ", "асинхронный вызов"),
-        (".await", "await"),
-        ("async ", "async"),
-        // Ошибки
-        ("try ", "try-блок"),
-        ("catch ", "catch"),
-        ("except ", "except"),
-        ("panic", "panic"),
-        ("throw ", "throw"),
-        // Логирование
-        ("log.", "логирование"),
-        ("println", "вывод"),
-        ("console.", "консоль"),
-        ("print(", "печать"),
-        // БД/HTTP
-        ("fetch(", "HTTP запрос"),
-        ("axios.", "HTTP"),
-        ("query(", "SQL запрос"),
-        ("execute(", "выполнение"),
-        // React хуки
-        ("useState", "useState"),
-        ("useEffect", "useEffect"),
-        ("useContext", "useContext"),
-        ("useRef", "useRef"),
-        ("useMemo", "useMemo"),
-        ("useCallback", "useCallback"),
-    ];
-    
-    for (pat, desc) in patterns {
-        if content_lower.contains(pat) {
-            if !summary.is_empty() {
-                summary.push_str("; ");
-            }
-            summary.push_str(desc);
-        }
-    }
-    
-    if summary.is_empty() {
-        // Fallback: первые N символов
-        let cut: String = chars.into_iter().take(max_chars).collect();
-        format!("{cut}…")
-    } else if summary.chars().count() > max_chars {
-        let cut: String = summary.chars().take(max_chars).collect();
-        format!("{cut}…")
-    } else {
-        summary
-    }
-}
-
 /// Дедупликация зависимостей в context_for (Optimization 2).
 /// Убираем дубликаты между outgoing/incoming/test связями.
 fn deduplicate_nodes(nodes: &mut Vec<Node>) {
@@ -264,7 +188,7 @@ impl Tool {
                 "path": {"type": "string", "description": "Файл; нужен без symbol или для выбора среди одноимённых"},
                 "start_line": {"type": "integer"},
                 "end_line": {"type": "integer"},
-                "mode": {"type": "string", "enum": ["signature", "doc", "folded", "full"]},
+                "mode": {"type": "string", "enum": ["signature", "doc", "folded", "full", "contract"]},
                 "max_tokens": max_tokens}}),
             Tool::Neighbors => json!({"type": "object", "properties": {
                 "symbol": {"type": "string"},
@@ -273,6 +197,7 @@ impl Tool {
             Tool::ContextFor => json!({"type": "object", "required": ["symbol"], "properties": {
                 "symbol": {"type": "string"},
                 "path": {"type": "string", "description": "Уточнение, если имён несколько"},
+                "include_body": {"type": "string", "enum": ["true", "false"], "description": "Включать ли тело функции (default: true)"},
                 "max_tokens": max_tokens}}),
             Tool::Status => json!({"type": "object", "properties": {}}),
         }
@@ -362,7 +287,7 @@ pub struct ToolResult {
 pub struct ToolRegistry {
     pub(crate) store: Arc<Store>,
     /// Кэш сессий для оптимизации повторных запросов (Optimization 4)
-    cache_registry: CacheRegistry,
+    cache_registry: Arc<CacheRegistry>,
 }
 
 type Body = (String, Vec<String>);
@@ -371,7 +296,7 @@ impl ToolRegistry {
     pub fn new(store: Arc<Store>) -> Self {
         Self { 
             store,
-            cache_registry: CacheRegistry::default(),
+            cache_registry: Arc::new(CacheRegistry::default()),
         }
     }
 
@@ -673,8 +598,8 @@ impl ToolRegistry {
 
     fn read(&self, ctx: &ToolContext) -> Result<Body> {
         let mode = ctx.str_arg("mode").unwrap_or_else(|| "full".into());
-        if !["signature", "doc", "folded", "full"].contains(&mode.as_str()) {
-            bail!("неизвестный mode «{mode}»: допустимы signature, doc, folded, full");
+        if !["signature", "doc", "folded", "full", "contract"].contains(&mode.as_str()) {
+            bail!("неизвестный mode «{mode}»: допустимы signature, doc, folded, full, contract");
         }
 
         let (path, mut start, mut end, symbol) = if ctx.str_arg("symbol").is_some() {
@@ -683,16 +608,37 @@ impl ToolRegistry {
             if let Some(note) = note {
                 body.push(note);
             }
-            if mode == "signature" || mode == "doc" {
+            if mode == "signature" || mode == "doc" || mode == "contract" {
                 body.push(format!(
                     "{}:{}\t{}",
                     node.path,
                     node.line_start.unwrap_or(0),
                     node.signature.as_deref().unwrap_or(&node.name)
                 ));
-                if mode == "doc" {
+                if mode == "doc" || mode == "contract" {
                     if let Some(doc) = node.doc_summary.as_deref().filter(|d| !d.is_empty()) {
                         body.push(mask_lines(doc.lines(), true).join("\n"));
+                    }
+                }
+                if mode == "contract" {
+                    // Добавляем публичные дочерние символы (методы класса, экспорты модуля)
+                    let children = self.store.nodes_in_file(&node.path)?;
+                    let child_symbols: Vec<&Node> = children.iter()
+                        .filter(|c| {
+                            c.line_start.is_some()
+                            && c.line_start.unwrap_or(0) > node.line_start.unwrap_or(0)
+                            && c.line_end.unwrap_or(0) <= node.line_end.unwrap_or(0)
+                            && matches!(c.kind, NodeKind::Method | NodeKind::Function | NodeKind::Constant | NodeKind::Type)
+                        })
+                        .take(20)
+                        .collect();
+                    if !child_symbols.is_empty() {
+                        body.push("публичные члены:".into());
+                        for c in child_symbols {
+                            if let Some(sig) = c.signature.as_deref() {
+                                body.push(format!("  {}", first_line(sig, 140)));
+                            }
+                        }
                     }
                 }
                 return Ok((body.join("\n"), vec![node.id.to_string()]));
@@ -701,7 +647,7 @@ impl ToolRegistry {
             let e = node.line_end.unwrap_or(s as i32).max(s as i32) as usize;
             (node.path.clone(), s, e, Some((node, body)))
         } else {
-            if mode == "signature" || mode == "doc" {
+            if mode == "signature" || mode == "doc" || mode == "contract" {
                 bail!("mode {mode} работает только с symbol");
             }
             let path = normalize_rel(
@@ -857,9 +803,14 @@ impl ToolRegistry {
             .str_arg("symbol")
             .ok_or_else(|| anyhow!("нужен параметр symbol"))?;
         let path = ctx.str_arg("path");
+        // include_body=false — не отдавать тело функции, только связи и сигнатуру (parameter from #13)
+        let include_body = ctx.str_arg("include_body").map(|v| v != "false").unwrap_or(true);
+        
+        // Кэш учитывает include_body
+        let cache_key = format!("{}:body={}", symbol, include_body);
         
         // Попытка получить из кэша (Optimization 4)
-        if let Some(cached) = self.session_cache(&ctx.session_id).read().unwrap().get_context_for(&symbol, path.as_deref()) {
+        if let Some(cached) = self.session_cache(&ctx.session_id).read().unwrap().get_context_for(&cache_key, path.as_deref()) {
             return Ok((cached.text, cached.node_ids));
         }
         
@@ -907,7 +858,19 @@ impl ToolRegistry {
         // Сначала короткие списки связей, потом код: код обрежется по бюджету, а карта связей останется
         if !outgoing.is_empty() {
             lines.push("вызывает:".into());
-            for n in outgoing.iter().take(12) {
+            // Топ-5 важных вызовов — показываем контракты (signature + doc)
+            for n in outgoing.iter().take(5) {
+                ids.push(n.id.to_string());
+                lines.push(format!("  {}", symbol_line(n)));
+                if let Some(doc) = n.doc_summary.as_deref().filter(|d| !d.is_empty()) {
+                    let short = first_line(doc, 120);
+                    if !short.is_empty() {
+                        lines.push(format!("    # {}", short));
+                    }
+                }
+            }
+            // Остальные — только сигнатуры
+            for n in outgoing.iter().skip(5).take(7) {
                 ids.push(n.id.to_string());
                 lines.push(format!("  {}", symbol_line(n)));
             }
@@ -927,31 +890,32 @@ impl ToolRegistry {
             }
         }
 
-        // закрытый файл не должен ронять весь ответ: связи и тесты уже собраны
-        match read_project_lines(&self.store, &ctx.project_root, &node.path) {
-            Ok(file_lines) => {
-                let start = node.line_start.unwrap_or(1).max(1) as usize;
-                let end = (node.line_end.unwrap_or(start as i32).max(start as i32) as usize)
-                    .min(file_lines.len());
-                if start <= end {
-                    let slice: Vec<(usize, &str)> = (start..=end)
-                        .map(|n| (n, file_lines[n - 1].as_str()))
-                        .collect();
-                    // Optimization 3: Суммаризация тела вместо folded
-                    // Оценка: если тело большое (>30 строк), даем суммаризацию
-                    let body_text: Vec<(usize, String)> = if slice.len() > 30 {
-                        let summary = summarize_body(&slice, 500);
-                        vec![(start, summary)]
-                    } else {
-                        // Маленькое тело — folded как раньше
-                        fold_by_indent(slice).into_iter().map(|(n, l)| (n, l.to_string())).collect()
-                    };
-                    lines.push(format!("{PROJECT_DATA_NOTE} {}:{start}-{end}", node.path));
-                    lines.extend(body_text.iter().map(|(n, l)| format!("{n}\t{l}")));
+        // Тело символа (если include_body != false)
+        if include_body {
+            // закрытый файл не должен ронять весь ответ: связи и тесты уже собраны
+            match read_project_lines(&self.store, &ctx.project_root, &node.path) {
+                Ok(file_lines) => {
+                    let start = node.line_start.unwrap_or(1).max(1) as usize;
+                    let end = (node.line_end.unwrap_or(start as i32).max(start as i32) as usize)
+                        .min(file_lines.len());
+                    if start <= end {
+                        let slice: Vec<(usize, &str)> = (start..=end)
+                            .map(|n| (n, file_lines[n - 1].as_str()))
+                            .collect();
+                        // folded: свёрнутый код, обрезка произойдёт по бюджету truncate_to_budget
+                        let folded = fold_by_indent(slice);
+                        lines.push(format!("{PROJECT_DATA_NOTE} {}:{start}-{end}", node.path));
+                        lines.extend(folded.iter().map(|(n, l)| format!("{n}\t{l}")));
+                    }
                 }
+                Err(e) => { lines.push(e.to_string()); }
             }
-            Err(e) => { lines.push(e.to_string()); }
-        };
+        } else {
+            lines.push(format!(
+                "{PROJECT_DATA_NOTE} {}: сигнатура (тело скрыто, include_body=false)",
+                node.path
+            ));
+        }
 
         let (text, shown) = truncate_to_budget(&lines, budget(ctx, &Tool::ContextFor));
         let result_text = with_omitted(
@@ -962,16 +926,16 @@ impl ToolRegistry {
         );
         let tokens = estimate_tokens(&result_text);
         
-        // Сохраняем в кэш
+        // Сохраняем в кэш (с учётом include_body в ключе)
         let cached = CachedContext {
-            symbol: symbol.clone(),
+            symbol: cache_key.clone(),
             path: path.clone(),
             text: result_text.clone(),
             tokens,
             node_ids: ids.clone(),
             timestamp: std::time::Instant::now(),
         };
-        self.session_cache(&ctx.session_id).write().unwrap().set_context_for(&symbol, path.as_deref(), cached);
+        self.session_cache(&ctx.session_id).write().unwrap().set_context_for(&cache_key, path.as_deref(), cached);
         
         Ok((result_text, ids))
     }
