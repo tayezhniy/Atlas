@@ -358,6 +358,9 @@ fn cmd_watch(root: &Path) -> Result<()> {
         ProjectIndexer::new(&mut store, &root_str).index_project()?;
     }
 
+    // Единый фильтр .gitignore / .atlasignore для наблюдателя
+    let path_filter = atlas_core::PathFilter::new(root)?;
+
     let mut watcher = FileWatcher::new()?;
     watcher.watch(root)?;
     println!(
@@ -373,6 +376,9 @@ fn cmd_watch(root: &Path) -> Result<()> {
                     if rel_str.starts_with(".atlas/") || rel_str.starts_with(".git/") {
                         continue;
                     }
+                    if path_filter.is_ignored(&rel_str) {
+                        continue;
+                    }
                     if let Ok(content) = std::fs::read_to_string(&p) {
                         let mut upd = IncrementalUpdater::new(&mut store, &root_str);
                         if upd.update_file(&rel_str, &content)? {
@@ -384,6 +390,9 @@ fn cmd_watch(root: &Path) -> Result<()> {
             Some(WatchEvent::Deleted(p)) => {
                 if let Ok(rel) = p.strip_prefix(root) {
                     let rel_str = rel.to_string_lossy().to_string();
+                    if path_filter.is_ignored(&rel_str) {
+                        continue;
+                    }
                     store.delete_nodes_by_path(&rel_str)?;
                     store.clear_empty_dirs()?;
                     atlas_core::ranking::recompute_ranks(&store)?;
@@ -393,16 +402,21 @@ fn cmd_watch(root: &Path) -> Result<()> {
             Some(WatchEvent::Renamed(from, to)) => {
                 if let Ok(rel_from) = from.strip_prefix(root) {
                     let rel_from_str = rel_from.to_string_lossy().to_string();
-                    store.delete_nodes_by_path(&rel_from_str)?;
+                    if !path_filter.is_ignored(&rel_from_str) {
+                        store.delete_nodes_by_path(&rel_from_str)?;
+                    }
                 }
                 if let Ok(rel_to) = to.strip_prefix(root) {
-                    if let Ok(content) = std::fs::read_to_string(&to) {
-                        let mut upd = IncrementalUpdater::new(&mut store, &root_str);
-                        if upd.update_file(rel_to.to_string_lossy().as_ref(), &content)? {
-                            println!(
-                                "🔄 Переиндексирован (переименован): {}",
-                                rel_to.to_string_lossy()
-                            );
+                    let rel_to_str = rel_to.to_string_lossy().to_string();
+                    if !path_filter.is_ignored(&rel_to_str) {
+                        if let Ok(content) = std::fs::read_to_string(&to) {
+                            let mut upd = IncrementalUpdater::new(&mut store, &root_str);
+                            if upd.update_file(&rel_to_str, &content)? {
+                                println!(
+                                    "🔄 Переиндексирован (переименован): {}",
+                                    rel_to_str
+                                );
+                            }
                         }
                     }
                 }

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import {
   Check, ChevronDown, FileText, Folder, GitBranch, Layers, PanelLeft, PanelRight, Plus,
-  RefreshCw, Search, Settings, ShieldCheck, TerminalSquare, Waypoints, X,
+  RefreshCw, Search, Settings, ShieldCheck, TerminalSquare, Waypoints, X, Plug,
 } from 'lucide-react'
 import FileTree from './components/FileTree'
 import Graph from './components/Graph'
@@ -12,12 +12,14 @@ import TokenPanel from './components/TokenPanel'
 import CommandPalette from './components/CommandPalette'
 import SettingsPanel from './components/Settings'
 import ReportExport from './components/ReportExport'
+import McpClients from './components/McpClients'
 import { fileName, formatNumber, timeAgo } from './lib'
 import type { IndexStatus, ProjectOverview } from './types'
 
 type PaletteMode = 'files' | 'symbols' | 'commands'
 const GRAPH = 'graph'
 const ACTIVITY = 'activity'
+const MCP = 'mcp'
 
 export default function App() {
   const [projects, setProjects] = useState<string[]>([])
@@ -39,6 +41,12 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [reportOpen, setReportOpen] = useState(false)
   const [reportFormat, setReportFormat] = useState<'json' | 'markdown'>('markdown')
+  const [binaryPath, setBinaryPath] = useState<string>('')
+
+  // Загрузить binary path при старте
+  useEffect(() => {
+    window.atlasAPI.binaryPath().then(setBinaryPath).catch(() => setBinaryPath('atlas-cli'))
+  }, [])
 
   const projectName = project ? fileName(project) : ''
   const nodes = overview?.top ?? []
@@ -200,6 +208,7 @@ export default function App() {
           {railButton('Поиск символов (Ctrl+Shift+F)', <Search className="w-4 h-4" />, () => setPalette('symbols'))}
           {railButton('Список файлов', <Layers className="w-4 h-4" />, () => { setTab(GRAPH); setGraphMode('list') }, tab === GRAPH && graphMode === 'list')}
           {railButton('MCP и журнал вызовов', <TerminalSquare className="w-4 h-4" />, () => setTab(ACTIVITY), tab === ACTIVITY)}
+          {railButton('Подключение MCP-клиентов', <Plug className="w-4 h-4" />, () => setTab(MCP), tab === MCP)}
           <div className="mt-auto">{railButton('Настройки (Ctrl+,)', <Settings className="w-4 h-4" />, () => setSettingsOpen(true))}</div>
         </nav>
 
@@ -308,6 +317,8 @@ export default function App() {
               </div>
               <div className="max-w-xl border border-border rounded-lg"><TokenPanel key={version} projectPath={project} /></div>
             </div>
+          ) : tab === MCP ? (
+            <McpClients projectPath={project} binaryPath={binaryPath} />
           ) : (
             <div className="flex-1 min-h-0">
               <FileView

@@ -178,6 +178,8 @@ ipcMain.handle('atlas:mcp-config', (_e, projectPath) =>
   ),
 )
 
+ipcMain.handle('atlas:binary-path', () => binaryPath())
+
 ipcMain.handle('atlas:settings-set', async (_e, { projectPath, key, value }) => {
   await runCli(['settings', 'set', '--project', projectPath, '--', key, value])
   return { ok: true }

@@ -135,6 +135,7 @@ declare global {
         incoming: EdgeInfo[]
       }>
       mcpConfig: (projectPath: string) => Promise<string>
+      binaryPath: () => Promise<string>
       report: (args: { projectPath: string; format: 'json' | 'markdown' | 'html' }) => Promise<ReportData | string>
       settings: {
         all: (projectPath: string) => Promise<{ ok: boolean; settings: Record<string, any> }>

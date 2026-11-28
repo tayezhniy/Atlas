@@ -20,6 +20,7 @@ contextBridge.exposeInMainWorld('atlasAPI', {
   read: invoke('read'),
   neighbors: invoke('neighbors'),
   mcpConfig: invoke('mcp-config'),
+  binaryPath: invoke('binary-path'),
   report: invoke('report'),
   settings: {
     all: invoke('settings-all'),

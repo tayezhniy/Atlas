@@ -633,7 +633,12 @@ impl ToolRegistry {
                     {
                         let impl_methods = find_rust_impl_methods(&self.store, &ctx.project_root, &node.path, &node.name)?;
                         for m in impl_methods {
-                            if is_public_symbol(&m, &node.path) && child_symbols.len() < 20 {
+                            // Методы из impl-блоков уже проверены по строкам.
+                            // Для inherent impl (impl Type) — только pub; для trait impl — все.
+                            // find_rust_impl_methods возвращает только методы из impl-блоков,
+                            // поэтому дополнительная фильтрация is_public_symbol не нужна:
+                            // приватные методы в inherent impl уже отфильтрованы внутри find_rust_impl_methods.
+                            if child_symbols.len() < 20 {
                                 child_symbols.push(m);
                             }
                         }
@@ -1088,21 +1093,10 @@ pub(crate) fn read_project_lines(store: &Store, root: &str, rel_path: &str) -> R
     if is_closed_path(rel_path) {
         bail!("путь «{rel_path}» закрыт для чтения через MCP (секрет или служебный каталог)");
     }
-    // .atlasignore — проверка для исходного пути
-    {
-        let ignore_path = Path::new(root).join(".atlasignore");
-        if ignore_path.exists() {
-            let content = std::fs::read_to_string(&ignore_path)?;
-            for line in content.lines() {
-                let line = line.trim();
-                if !line.is_empty() && !line.starts_with('#') {
-                    let pattern = line.trim_end_matches('/');
-                    if match_path(pattern, rel_path) {
-                        bail!("путь «{rel_path}» закрыт .atlasignore");
-                    }
-                }
-            }
-        }
+    // .gitignore / .atlasignore — единый фильтр (тот же матчер, что у обхода)
+    let filter = atlas_core::PathFilter::new(Path::new(root))?;
+    if filter.is_ignored(rel_path) {
+        bail!("путь «{rel_path}» закрыт .gitignore/.atlasignore");
     }
     let root =
         std::fs::canonicalize(root).map_err(|e| anyhow!("корень проекта недоступен: {e}"))?;
@@ -1120,52 +1114,18 @@ pub(crate) fn read_project_lines(store: &Store, root: &str, rel_path: &str) -> R
     if is_closed_path(&target_path) {
         bail!("путь «{rel_path}» закрыт для чтения через MCP (ссылка на секрет)");
     }
-    // .atlasignore — проверка для целевого пути (через ссылку)
-    {
-        let ignore_path = Path::new(&root).join(".atlasignore");
-        if ignore_path.exists() {
-            let content = std::fs::read_to_string(&ignore_path)?;
-            for line in content.lines() {
-                let line = line.trim();
-                if !line.is_empty() && !line.starts_with('#') {
-                    let pattern = line.trim_end_matches('/');
-                    if match_path(pattern, &target_path) {
-                        bail!("путь «{rel_path}» закрыт .atlasignore (через ссылку)");
-                    }
-                }
-            }
-        }
+    // .gitignore / .atlasignore — проверка для целевого пути (через ссылку)
+    if filter.is_ignored(&target_path) {
+        bail!("путь «{rel_path}» закрыт .gitignore/.atlasignore (через ссылку)");
     }
     let content = std::fs::read_to_string(&canonical)
         .map_err(|e| anyhow!("не удалось прочитать «{rel_path}»: {e}"))?;
     Ok(mask_lines(content.lines(), is_config_path(&target_path)))
 }
 
-/// Примитивный матчинг путей (поддерживает *, **, ?, и trailing / для директорий).
-/// Правила как в .gitignore: паттерн без / совпадает с файлом И директорией (+ содержимое),
-/// паттерн с / — только с директорией (+ содержимое).
-fn match_path(pattern: &str, path: &str) -> bool {
-    let pattern = pattern.trim_end_matches('/');
-    
-    // Переводим в regex
-    let mut regex_str = String::new();
-    for ch in pattern.chars() {
-        match ch {
-            '*' => regex_str.push_str(".*"),
-            '?' => regex_str.push('.'),
-            '.' => regex_str.push_str("\\."),
-            c => regex_str.push(c),
-        }
-    }
-    // Паттерн может быть директорией: добавляем опциональный суффикс для содержимого
-    regex_str.push_str("(/.*)?");
-    
-    regex::Regex::new(&format!("^{}$", regex_str))
-        .map(|re| re.is_match(path))
-        .unwrap_or(false)
-}
-
 /// Находит методы в impl блоках для указанного Rust типа.
+/// Поддерживает: `impl Type`, `impl<T> Type<T>`, `impl Trait for Type`.
+/// Сопоставляет методы по имени И по попаданию строк метода в диапазон impl-блока.
 fn find_rust_impl_methods(
     store: &Store,
     project_root: &str,
@@ -1175,45 +1135,71 @@ fn find_rust_impl_methods(
     let all_symbols = store.nodes_in_file(file_path)?;
     let mut methods = Vec::new();
     
-    // Читаем файл для поиска impl блоков
     let full_path = std::path::Path::new(project_root).join(file_path);
     let content = std::fs::read_to_string(&full_path).unwrap_or_default();
     
-    // Простой поиск: ищем "impl TypeName" блоки и извлекаем методы
-    // Используем regex для поиска impl блоков
-    let impl_pattern = format!(r"impl\s+(?:<[^>]*>\s*)?{}\s*\{{", regex::escape(type_name));
+    // Regex для impl-блоков:
+    //   impl Type { ... }
+    //   impl<T> Type<T> { ... }
+    //   impl Trait for Type { ... }
+    //   impl<T> Trait for Type<T> { ... }
+    let escaped = regex::escape(type_name);
+    // impl-блоки: impl Type, impl<T> Type<T>, impl Trait for Type, impl<T> Trait for Type<T>
+    // Используем [\w]+ (без пробелов) для имени типа в "Trait for Type"
+    let impl_pattern = format!(
+        r"impl\s*(?:<[^>]*>\s*)?(?:[\w]+\s+for\s+)?{}(?:\s*<[^>]*>)?\s*\{{",
+        escaped
+    );
     let impl_regex = regex::Regex::new(&impl_pattern).ok();
     
     if let Some(re) = impl_regex {
         for mat in re.find_iter(&content) {
-            let impl_start = mat.end();
+            let brace_start = mat.end() - 1; // позиция {
+            
+            // Определяем, trait impl или inherent: если в заголовке есть "for" — trait impl
+            let header = &content[mat.start()..brace_start];
+            let is_trait_impl = header.contains(" for ");
+            
             // Находим соответствующую закрывающую скобку
             let mut brace_count = 1;
-            let mut impl_end = impl_start;
-            for (i, ch) in content[impl_start..].char_indices() {
+            let mut impl_end = brace_start + 1;
+            for (i, ch) in content[brace_start + 1..].char_indices() {
                 if ch == '{' {
                     brace_count += 1;
                 } else if ch == '}' {
                     brace_count -= 1;
                     if brace_count == 0 {
-                        impl_end = impl_start + i + 1;
+                        impl_end = brace_start + 1 + i + 1;
                         break;
                     }
                 }
             }
             
-            let impl_block = &content[impl_start..impl_end];
-            // Извлекаем сигнатуры методов из блока
+            // Вычисляем диапазон строк impl-блока (1-based)
+            let impl_start_line = content[..mat.start()].lines().count() + 1;
+            let impl_end_line = content[..impl_end].lines().count();
+            
+            let impl_block = &content[brace_start + 1..impl_end - 1];
             let method_regex = regex::Regex::new(r"(?m)^\s*(?:pub\s+)?(?:async\s+)?fn\s+(\w+)\s*\(").unwrap();
             for cap in method_regex.captures_iter(impl_block) {
                 let method_name = &cap[1];
-                // Ищем этот метод в символах
+                // Сопоставляем по имени И по попаданию в диапазон строк impl-блока
                 if let Some(method_node) = all_symbols.iter().find(|n| {
                     n.name == method_name
                         && matches!(n.kind, NodeKind::Method | NodeKind::Function)
                         && n.line_start.is_some()
+                        && (n.line_start.unwrap() as usize) >= impl_start_line
+                        && (n.line_end.unwrap_or(n.line_start.unwrap()) as usize) <= impl_end_line
                 }) {
-                    methods.push(method_node.clone());
+                    // Для inherent impl (impl Type) — только pub методы; для trait impl — все
+                    let is_pub = method_node.signature.as_deref()
+                        .map(|s| s.contains("pub "))
+                        .unwrap_or(false);
+                    if is_trait_impl || is_pub {
+                        if !methods.iter().any(|m: &Node| m.id == method_node.id) {
+                            methods.push(method_node.clone());
+                        }
+                    }
                 }
             }
         }
@@ -1625,6 +1611,40 @@ mod tests {
     }
 
     #[test]
+    fn atlasignore_patterns_match_walker() -> Result<()> {
+        // Таблица из ТЗ: правило → файл, который должен быть исключён
+        let cases = [
+            ("private/\n", "src/private/p.py"),
+            ("/private/\n", "private/p.py"),
+            ("p.py\n", "src/p.py"),
+            ("**/private/\n", "private/p.py"),
+            ("a+b/\n", "a+b/p.py"),
+        ];
+        for (rule, file) in &cases {
+            let dir = tempfile::tempdir().unwrap();
+            let root = dir.path().to_string_lossy().to_string();
+            std::fs::write(dir.path().join(".atlasignore"), rule).unwrap();
+            std::fs::create_dir_all(dir.path().join(std::path::Path::new(file).parent().unwrap())).unwrap();
+            std::fs::write(dir.path().join(file), "X = 1\n").unwrap();
+            let store = Store::open(dir.path().join("test.db")).unwrap();
+            let f = node(NodeKind::File, file, file, None, None, None);
+            store.upsert_node(&f).unwrap();
+            let registry = ToolRegistry::new(Arc::new(store));
+            let ctx = ToolContext::new(
+                "s".into(),
+                Tool::Read,
+                0,
+                root.clone(),
+                HashMap::new(),
+            )
+            .with_args(json!({"path": file}));
+            let result = registry.execute(&Tool::Read, &ctx);
+            assert!(result.is_err(), "правило «{}» должно исключать «{}», но read вернул ОК", rule.trim(), file);
+        }
+        Ok(())
+    }
+
+    #[test]
     fn context_for_reflects_reindex_changes() -> Result<()> {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().to_string_lossy().to_string();
@@ -1678,18 +1698,10 @@ mod tests {
         .with_args(json!({"symbol": "calc"}));
         let text2 = registry.execute(&Tool::ContextFor, &ctx2)?.text;
         // Тело читается с диска, поэтому изменения в файле отразятся
-        assert!(!text2.is_empty(), "второй запрос не должен быть пустым");
+        assert!(text2.contains("222"), "второй запрос должен вернуть 222 (новое содержимое): {text2}");
+        assert!(!text2.contains("111"), "второй запрос НЕ должен содержать старое 111: {text2}");
         Ok(())
     }
-
-#[test]
-fn test_match_path_atlasignore() {
-    assert!(match_path("secret/", "secret/leak.py"), "secret/ should match secret/leak.py");
-    assert!(match_path("secret", "secret/leak.py"), "secret should match secret/leak.py");
-    assert!(match_path("secret/*", "secret/leak.py"), "secret/* should match secret/leak.py");
-    assert!(!match_path("secret/", "other/secret/leak.py"), "secret/ should not match other/secret/leak.py");
-    assert!(match_path("**/secret/", "other/secret/leak.py"), "**/secret/ should match other/secret/leak.py");
-}
 
 #[test]
 fn context_for_include_body_false_shows_signature_only() -> Result<()> {
@@ -1931,6 +1943,107 @@ fn contract_mode_finds_rust_impl_methods() -> Result<()> {
     assert!(text.contains("get_value"), "contract должен показывать get_value: {text}");
     // Приватные методы не должны быть
     assert!(!text.contains("private_method"), "contract НЕ должен показывать private_method: {text}");
+    Ok(())
+}
+
+#[test]
+fn contract_mode_rust_no_foreign_method() -> Result<()> {
+    // Два струк-tуры с одинаковым именем метода new — contract для B не должен показать A::new
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().to_string_lossy().to_string();
+    std::fs::write(
+        dir.path().join("lib.rs"),
+        "struct A {\n    x: u8,\n}\n\nimpl A {\n    pub fn new(x: u8) -> Self {\n        Self { x }\n    }\n}\n\nstruct B {\n    y: u16,\n}\n\nimpl B {\n    pub fn new(y: u16) -> Self {\n        Self { y }\n    }\n}\n",
+    )
+    .unwrap();
+    let store = Arc::new(Store::open(dir.path().join("test.db")).unwrap());
+    let mut f = node(NodeKind::File, "lib.rs", "lib.rs", None, None, None);
+    f.lang = Some("rust".into());
+    let mut a = node(NodeKind::Type, "lib.rs", "A", Some(1), Some(3), Some("struct A"));
+    a.lang = Some("rust".into());
+    let mut b = node(NodeKind::Type, "lib.rs", "B", Some(11), Some(13), Some("struct B"));
+    b.lang = Some("rust".into());
+    let mut a_new = node(NodeKind::Method, "lib.rs", "new", Some(6), Some(8), Some("pub fn new(x: u8) -> Self"));
+    a_new.lang = Some("rust".into());
+    let mut b_new = node(NodeKind::Method, "lib.rs", "new", Some(16), Some(18), Some("pub fn new(y: u16) -> Self"));
+    b_new.lang = Some("rust".into());
+    store.upsert_node(&f).unwrap();
+    store.upsert_node(&a).unwrap();
+    store.upsert_node(&b).unwrap();
+    store.upsert_node(&a_new).unwrap();
+    store.upsert_node(&b_new).unwrap();
+    let registry = ToolRegistry::new(store.clone());
+
+    // contract для B должен показать B::new(y: u16), а не A::new(x: u8)
+    let ctx = ToolContext::new(
+        "s".into(),
+        Tool::Read,
+        0,
+        root.clone(),
+        HashMap::new(),
+    )
+    .with_args(json!({"symbol": "B", "mode": "contract"}));
+    let text = registry.execute(&Tool::Read, &ctx)?.text;
+    assert!(text.contains("y: u16"), "contract для B должен показывать B::new(y: u16): {text}");
+    assert!(!text.contains("x: u8"), "contract для B НЕ должен показывать A::new(x: u8): {text}");
+    Ok(())
+}
+
+#[test]
+fn contract_mode_rust_generic_and_trait_impl() -> Result<()> {
+    // impl<T> B<T> и impl Trait for C — методы должны находиться
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().to_string_lossy().to_string();
+    std::fs::write(
+        dir.path().join("lib.rs"),
+        "struct B<T> {\n    val: T,\n}\n\nimpl<T> B<T> {\n    pub fn new(val: T) -> Self {\n        Self { val }\n    }\n    pub fn get(&self) -> &T {\n        &self.val\n    }\n}\n\nstruct C {\n    z: i32,\n}\n\ntrait Show {\n    fn show(&self) -> String;\n}\n\nimpl Show for C {\n    fn show(&self) -> String {\n        format!(\"{}\", self.z)\n    }\n}\n",
+    )
+    .unwrap();
+    let store = Arc::new(Store::open(dir.path().join("test.db")).unwrap());
+    let mut f = node(NodeKind::File, "lib.rs", "lib.rs", None, None, None);
+    f.lang = Some("rust".into());
+    let mut b = node(NodeKind::Type, "lib.rs", "B", Some(1), Some(3), Some("struct B<T>"));
+    b.lang = Some("rust".into());
+    let mut b_new = node(NodeKind::Method, "lib.rs", "new", Some(6), Some(8), Some("pub fn new(val: T) -> Self"));
+    b_new.lang = Some("rust".into());
+    let mut b_get = node(NodeKind::Method, "lib.rs", "get", Some(9), Some(11), Some("pub fn get(&self) -> &T"));
+    b_get.lang = Some("rust".into());
+    let mut c = node(NodeKind::Type, "lib.rs", "C", Some(14), Some(16), Some("struct C"));
+    c.lang = Some("rust".into());
+    let mut c_show = node(NodeKind::Method, "lib.rs", "show", Some(23), Some(25), Some("fn show(&self) -> String"));
+    c_show.lang = Some("rust".into());
+    store.upsert_node(&f).unwrap();
+    store.upsert_node(&b).unwrap();
+    store.upsert_node(&b_new).unwrap();
+    store.upsert_node(&b_get).unwrap();
+    store.upsert_node(&c).unwrap();
+    store.upsert_node(&c_show).unwrap();
+    let registry = ToolRegistry::new(store.clone());
+
+    // contract для B<T> — методы из impl<T> B<T>
+    let ctx_b = ToolContext::new(
+        "s".into(),
+        Tool::Read,
+        0,
+        root.clone(),
+        HashMap::new(),
+    )
+    .with_args(json!({"symbol": "B", "mode": "contract"}));
+    let text_b = registry.execute(&Tool::Read, &ctx_b)?.text;
+    assert!(text_b.contains("new"), "contract для B<T> должен показывать new: {text_b}");
+    assert!(text_b.contains("get"), "contract для B<T> должен показывать get: {text_b}");
+
+    // contract для C — метод из impl Show for C
+    let ctx_c = ToolContext::new(
+        "s".into(),
+        Tool::Read,
+        0,
+        root.clone(),
+        HashMap::new(),
+    )
+    .with_args(json!({"symbol": "C", "mode": "contract"}));
+    let text_c = registry.execute(&Tool::Read, &ctx_c)?.text;
+    assert!(text_c.contains("show"), "contract для C должен показывать show из impl Show for C: {text_c}");
     Ok(())
 }
 }
